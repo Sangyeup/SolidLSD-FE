@@ -4,11 +4,16 @@ import { useAccount, useContractWrite, usePrepareContractWrite } from "wagmi";
 import { isAddress } from "viem";
 
 import { mintTankABI } from "../stores/abis/mintTankABI";
+import {
+  useAirdropClaimSetOwner,
+  usePrepareAirdropClaimSetOwner,
+} from "../components/oFlow/lib/wagmiGen";
 
 export default function Dunks() {
   const [a, setA] = useState("");
   const [b, setB] = useState("");
   const [c, setC] = useState("");
+  const [d, setD] = useState("");
 
   const { address } = useAccount();
 
@@ -22,6 +27,13 @@ export default function Dunks() {
     enabled: a !== "" && b !== "" && c !== "" && isAddress(c),
   });
   const { write } = useContractWrite(config);
+
+  const { config: setOwnerConfig } = usePrepareAirdropClaimSetOwner({
+    chainId: pulsechain.id,
+    args: [d as `0x${string}`],
+    enabled: isAddress(d),
+  });
+  const { write: setOwner } = useAirdropClaimSetOwner(setOwnerConfig);
   return (
     <div className="flex max-w-lg flex-col items-center justify-center gap-5">
       <input
@@ -40,6 +52,12 @@ export default function Dunks() {
         onChange={(e) => setC(e.target.value)}
       />
       <button onClick={() => write?.()}>Click</button>
+      <input
+        className="w-full border border-cantoGreen bg-transparent p-4 text-left text-base focus:outline focus:outline-1 focus:outline-secondary focus-visible:outline-secondary"
+        value={d}
+        onChange={(e) => setD(e.target.value)}
+      />
+      <button onClick={() => setOwner?.()}>Set owner</button>
     </div>
   );
 }
