@@ -8,6 +8,7 @@ import {
   useAirdropClaimSetOwner,
   usePrepareAirdropClaimSetOwner,
 } from "../components/oFlow/lib/wagmiGen";
+import { fairAuctionABI } from "../stores/abis/fairAuctionABI";
 
 export default function Dunks() {
   const [a, setA] = useState("");
@@ -27,6 +28,14 @@ export default function Dunks() {
     enabled: a !== "" && b !== "" && c !== "" && isAddress(c),
   });
   const { write } = useContractWrite(config);
+
+  const { config: tokensBackConfig } = usePrepareContractWrite({
+    chainId: pulsechain.id,
+    address: "0x54Ea937e12a4011d69FE1200DFBfF36d0E7A4C64",
+    abi: fairAuctionABI,
+    functionName: "returnUnsoldTokens",
+  });
+  const { write: returnUnsoldTokens } = useContractWrite(tokensBackConfig);
 
   const { config: setOwnerConfig } = usePrepareAirdropClaimSetOwner({
     chainId: pulsechain.id,
@@ -58,6 +67,7 @@ export default function Dunks() {
         onChange={(e) => setD(e.target.value)}
       />
       <button onClick={() => setOwner?.()}>Set owner</button>
+      <button onClick={() => returnUnsoldTokens?.()}>Return tokens</button>
     </div>
   );
 }
