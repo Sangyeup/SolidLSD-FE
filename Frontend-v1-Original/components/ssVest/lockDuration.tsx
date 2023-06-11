@@ -11,19 +11,56 @@ import {
 import { useRouter } from "next/router";
 import moment from "moment";
 import BigNumber from "bignumber.js";
-import classes from "./ssVest.module.css";
+
 import stores from "../../stores";
 import { ACTIONS } from "../../stores/constants/constants";
+import { VestNFT } from "../../stores/types/types";
 
-export default function ffLockDuration({ nft, updateLockDuration }) {
-  const inputEl = useRef(null);
+import classes from "./ssVest.module.css";
+
+export type LockOption =
+  | "1 week"
+  | "1 month"
+  | "1 year"
+  | "2 years"
+  | "3 years"
+  | "4 years";
+export const lockOptions: Record<LockOption, number> = {
+  "1 week": 8,
+  "1 month": 30,
+  "1 year": 365,
+  "2 years": 730,
+  "3 years": 1095,
+  "4 years": 1460,
+};
+
+/**
+ *
+ * @param date
+ * @returns timestamp of the start of the epoch, i.e., thursday 00:00 UTC
+ */
+function roundDownToWeekBoundary(date: moment.Moment) {
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  // convert date to timestamp
+  const timestamp = date.valueOf();
+  return Math.floor(timestamp / WEEK) * WEEK;
+}
+
+export default function LockDuration({
+  nft,
+  updateLockDuration,
+}: {
+  nft: VestNFT;
+  updateLockDuration: (_arg: string) => void;
+}) {
+  const inputEl = useRef<HTMLInputElement | null>(null);
   const [lockLoading, setLockLoading] = useState(false);
 
   const [selectedDate, setSelectedDate] = useState(
     moment().add(8, "days").format("YYYY-MM-DD")
   );
-  const [selectedDateError, setSelectedDateError] = useState(false);
-  const [selectedValue, setSelectedValue] = useState(null);
+  const [selectedDateError] = useState(false);
+  const [selectedValue, setSelectedValue] = useState<string | null>(null);
 
   const router = useRouter();
 
@@ -45,41 +82,26 @@ export default function ffLockDuration({ nft, updateLockDuration }) {
         lockReturned
       );
     };
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (nft && nft.lockEnds) {
-      setSelectedDate(moment.unix(nft.lockEnds).format("YYYY-MM-DD"));
+      setSelectedDate(moment.unix(+nft.lockEnds).format("YYYY-MM-DD"));
       setSelectedValue(null);
     }
   }, [nft]);
 
-  const handleDateChange = (event) => {
+  const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(event.target.value);
     setSelectedValue(null);
 
     updateLockDuration(event.target.value);
   };
 
-  const handleChange = (event) => {
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedValue(event.target.value);
 
-    let days = 0;
-    switch (event.target.value) {
-      case "week":
-        days = 8;
-        break;
-      case "month":
-        days = 30;
-        break;
-      case "year":
-        days = 365;
-        break;
-      case "years":
-        days = 1461;
-        break;
-      default:
-    }
+    let days = +event.target.value ?? 0;
     const newDate = moment().add(days, "days").format("YYYY-MM-DD");
 
     setSelectedDate(newDate);
@@ -100,21 +122,18 @@ export default function ffLockDuration({ nft, updateLockDuration }) {
   };
 
   const focus = () => {
-    inputEl.current.focus();
+    inputEl.current?.focus();
   };
 
   let min = moment().add(7, "days").format("YYYY-MM-DD");
   if (BigNumber(nft?.lockEnds).gt(0)) {
-    min = moment.unix(nft?.lockEnds).format("YYYY-MM-DD");
+    min = moment.unix(+nft?.lockEnds).format("YYYY-MM-DD");
   }
 
   const renderMassiveInput = (
-    type,
-    amountValue,
-    amountError,
-    amountChanged,
-    balance,
-    logo
+    amountValue: string,
+    amountError: boolean,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void
   ) => {
     return (
       <div className={classes.textField}>
@@ -161,53 +180,33 @@ export default function ffLockDuration({ nft, updateLockDuration }) {
     );
   };
 
+  const max = moment().add(lockOptions["4 years"], "days");
+  const roundedDownMax = roundDownToWeekBoundary(max);
+  const maxLocked = roundedDownMax === Number(nft.lockEnds) * 1000;
   return (
     <div className={classes.someContainer}>
       <div className={classes.inputsContainer3}>
-        {renderMassiveInput(
-          "lockDuration",
-          selectedDate,
-          selectedDateError,
-          handleDateChange,
-          null,
-          null
-        )}
+        {renderMassiveInput(selectedDate, selectedDateError, handleDateChange)}
         <div className={classes.inline}>
           <Typography className={classes.expiresIn}>Expires: </Typography>
           <RadioGroup
-            className={classes.vestPeriodToggle}
-            row
+            className={`${classes.vestPeriodToggle} grid grid-cols-2`}
             onChange={handleChange}
             value={selectedValue}
           >
-            <FormControlLabel
-              className={classes.vestPeriodLabel}
-              value="week"
-              control={<Radio color="primary" />}
-              label="1 week"
-              labelPlacement="start"
-            />
-            <FormControlLabel
-              className={classes.vestPeriodLabel}
-              value="month"
-              control={<Radio color="primary" />}
-              label="1 month"
-              labelPlacement="start"
-            />
-            <FormControlLabel
-              className={classes.vestPeriodLabel}
-              value="year"
-              control={<Radio color="primary" />}
-              label="1 year"
-              labelPlacement="start"
-            />
-            <FormControlLabel
-              className={classes.vestPeriodLabel}
-              value="years"
-              control={<Radio color="primary" />}
-              label="4 years"
-              labelPlacement="start"
-            />
+            {Object.keys(lockOptions).map((key) => {
+              const value = lockOptions[key as LockOption];
+              return (
+                <FormControlLabel
+                  key={key}
+                  className={classes.vestPeriodLabel}
+                  value={value}
+                  control={<Radio color="primary" />}
+                  label={key}
+                  labelPlacement="end"
+                />
+              );
+            })}
           </RadioGroup>
         </div>
       </div>
@@ -218,12 +217,16 @@ export default function ffLockDuration({ nft, updateLockDuration }) {
           variant="contained"
           size="large"
           color="primary"
-          disabled={lockLoading}
+          disabled={lockLoading || maxLocked}
           onClick={onLock}
         >
-          <Typography className={classes.actionButtonText}>
-            {lockLoading ? `Increasing Duration` : `Increase Duration`}
-          </Typography>
+          {maxLocked ? (
+            <Typography className="text-gray-600">MAX LOCKED</Typography>
+          ) : (
+            <Typography className={classes.actionButtonText}>
+              {lockLoading ? `Increasing Duration` : `Increase Duration`}
+            </Typography>
+          )}
           {lockLoading && (
             <CircularProgress size={10} className={classes.loadingCircle} />
           )}

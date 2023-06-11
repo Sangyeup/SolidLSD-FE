@@ -1,5 +1,7 @@
+import { ZERO_ADDRESS } from "../constants/constants";
+
 interface BaseAsset {
-  address: string;
+  address: `0x${string}`;
   symbol: string;
   name: string;
   decimals: number;
@@ -14,7 +16,7 @@ interface RouteAsset {
   price: number;
   nativeChainAddress: string; // if no,  set to :""
   nativeChainId: number;
-  address: string;
+  address: `0x${string}`;
   name: string;
   symbol: string;
   decimals: number;
@@ -28,21 +30,27 @@ type TokenForPrice = Omit<
   Partial<RouteAsset>;
 
 type VeToken = Omit<BaseAsset, "balance" | "local">;
+type GovToken = Omit<BaseAsset, "local"> & {
+  balanceOf: string;
+};
 
 interface VestNFT {
   id: string;
   lockAmount: string;
   lockEnds: string;
   lockValue: string;
+  actionedInCurrentEpoch: boolean;
+  reset: boolean;
+  lastVoted: bigint;
+  influence: number;
 }
 
 interface Bribe {
-  token: RouteAsset;
+  token: RouteAsset | BaseAsset;
   reward_ammount: number;
   rewardAmmount: number;
   rewardAmount?: number; // gets assigned in frontend store and eq rewardAmmount
   earned?: string;
-  tokenPrice?: number;
 }
 
 type BribeEarned = { earned: string };
@@ -50,15 +58,16 @@ type BribeEarned = { earned: string };
 interface Pair {
   tvl: number;
   apr: number;
-  address: string;
+  oblotr_apr: number;
+  address: `0x${string}`;
   symbol: string;
   decimals: number;
   stable: boolean;
   total_supply: number;
   reserve0: number | string; // gets reassigned to string in frontend store
   reserve1: number | string; // gets reassigned to string in frontend store
-  token0_address: string;
-  token1_address: string;
+  token0_address: `0x${string}`;
+  token1_address: `0x${string}`;
   gauge_address: string; // if no,  set to :""
   isStable: boolean;
   totalSupply: number | string; // gets reassigned to string in frontend store
@@ -68,22 +77,25 @@ interface Pair {
   claimable0?: string;
   claimable1?: string;
   balance?: string;
+  isAliveGauge?: boolean;
   gauge?: {
     // exists only if gauge_address is not empty
     decimals: number;
     tbv: number;
     votes: number;
     apr: number;
-    address: string;
+    address: `0x${string}`;
     total_supply: number;
-    bribe_address: string;
-    fees_address: string;
-    wrapped_bribe_address: string;
+    bribe_address: `0x${string}`;
+    wrapped_bribe_address: `0x${string}`;
+    x_wrapped_bribe_address: `0x${string}`;
+    xx_wrapped_bribe_address: `0x${string}`;
     reward: number;
-    bribeAddress: string;
-    feesAddress: string;
+    bribeAddress: `0x${string}`;
     totalSupply: number | string; //gets reassigned to string in frontend store
     bribes: Bribe[];
+    x_bribes: Bribe[];
+    xx_bribes: Bribe[];
     // following gets assigned in frontend store
     balance?: string;
     reserve0?: string;
@@ -91,99 +103,49 @@ interface Pair {
     weight?: string;
     weightPercent?: string;
     rewardsEarned?: string;
-    bribesEarned?: Bribe[] | BribeEarned[];
-    votingApr?: number;
+    BLOTR_rewardsEarned?: string;
+    x_bribesEarned?: Bribe[];
+    xx_bribesEarned?: Bribe[];
+    bribesEarnedValue?: BribeEarned[];
   };
   gaugebribes?: Bribe[];
 }
 
-interface GeneralContracts {
-  GOV_TOKEN_ADDRESS: string;
-  GOV_TOKEN_NAME: string;
-  GOV_TOKEN_SYMBOL: string;
-  GOV_TOKEN_DECIMALS: number;
-  GOV_TOKEN_LOGO: string;
-  GOV_TOKEN_ABI: any[];
-  VE_TOKEN_ADDRESS: string;
-  VE_TOKEN_NAME: string;
-  VE_TOKEN_SYMBOL: string;
-  VE_TOKEN_DECIMALS: number;
-  VE_TOKEN_LOGO: string;
-  VE_TOKEN_ABI: any[];
-  FACTORY_ADDRESS: string;
-  FACTORY_ABI: any[];
-  ROUTER_ADDRESS: string;
-  ROUTER_ABI: any[];
-  VE_DIST_ADDRESS: string;
-  VE_DIST_ABI: any[];
-  VOTER_ADDRESS: string;
-  VOTER_ABI: any[];
-  MINTER_ADDRESS: string;
-  MINTER_ABI: any[];
-  ERC20_ABI: any[];
-  PAIR_ABI: any[];
-  GAUGE_ABI: any[];
-  BRIBE_ABI: any[];
-  TOKEN_ABI: any[];
-  MULTICALL_ADDRESS: string;
-  STABLE_TOKEN_ADDRESS: string;
-  MSIG_ADDRESS: string;
-}
+type WithRequired<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
 
-interface TestnetContracts extends GeneralContracts {
-  WETH_ADDRESS: string;
-  WETH_NAME: string;
-  WETH_SYMBOL: string;
-  WETH_DECIMALS: number;
-  WETH_ABI: any[];
-  WETH_IMPL_ABI: any[];
-  ETH_ADDRESS: string;
-  ETH_NAME: string;
-  ETH_SYMBOL: string;
-  ETH_DECIMALS: number;
-  ETH_LOGO: string;
-}
-interface CantoContracts extends GeneralContracts {
-  WCANTO_ADDRESS: string;
-  WCANTO_NAME: string;
-  WCANTO_SYMBOL: string;
-  WCANTO_DECIMALS: number;
-  WCANTO_ABI: any[];
-  WCANTO_IMPL_ABI: any[];
-  CANTO_ADDRESS: string;
-  CANTO_NAME: string;
-  CANTO_SYMBOL: string;
-  CANTO_DECIMALS: number;
-  CANTO_LOGO: string;
-}
-interface ArbitrumContracts extends GeneralContracts {
-  WETH_ADDRESS: string;
-  WETH_NAME: string;
-  WETH_SYMBOL: string;
-  WETH_DECIMALS: number;
-  WETH_ABI: any[];
-  WETH_IMPL_ABI: any[];
-  ETH_ADDRESS: string;
-  ETH_NAME: string;
-  ETH_SYMBOL: string;
-  ETH_DECIMALS: number;
-  ETH_LOGO: string;
-}
+type Gauge = WithRequired<Pair, "gauge">;
+const hasGauge = (pair: Pair): pair is Gauge =>
+  pair && pair.gauge !== undefined && pair.gauge.address !== ZERO_ADDRESS;
+const isGaugeReward = (reward: Gauge | VeDistReward): reward is Gauge =>
+  reward && reward.rewardType !== "Distribution";
+const isBaseAsset = (
+  asset: BaseAsset | RouteAsset | Pair | null
+): asset is BaseAsset => !!asset && "balance" in asset && "name" in asset;
 
-type Contracts = TestnetContracts | CantoContracts | ArbitrumContracts;
+interface VeDistReward {
+  token: VestNFT;
+  lockToken: VeToken;
+  rewardToken: Omit<BaseAsset, "local"> & {
+    balanceOf: string;
+  };
+  earned: string;
+  rewardType: "Distribution";
+}
 
 type Vote = {
-  address: string;
+  address: `0x${string}`;
   votePercent: string;
 };
+
+type Votes = Array<Pick<Vote, "address"> & { value: number }>;
 
 interface DexScrennerPair {
   chainId: string;
   dexId: string;
   url: string;
-  pairAddress: string;
+  pairAddress: `0x${string}`;
   baseToken: {
-    address: string;
+    address: `0x${string}`;
     name: string;
     symbol: string;
   };
@@ -250,25 +212,108 @@ interface ITransaction {
   transactions: {
     uuid: string;
     description: string;
-    status: string;
+    status: TransactionStatus;
     txHash?: string;
     error?: string;
   }[];
 }
 
+enum TransactionStatus {
+  PENDING = "PENDING",
+  SUBMITTED = "SUBMITTED",
+  CONFIRMED = "CONFIRMED",
+  REJECTED = "REJECTED",
+  DONE = "DONE",
+  WAITING = "WAITING",
+}
+
+type EthWindow = Window &
+  typeof globalThis & {
+    ethereum?: any;
+  };
+
+// FIREBIRD
+interface QuoteSwapPayload {
+  payload: {
+    content: {
+      fromAsset: BaseAsset;
+      toAsset: BaseAsset;
+      fromAmount: string;
+      slippage: string;
+    };
+  };
+  address: `0x${string}`;
+}
+
+interface QuoteSwapResponse {
+  encodedData: {
+    router: `0x${string}`;
+    data: `0x${string}`;
+  };
+  maxReturn: {
+    from: `0x${string}`;
+    to: `0x${string}`;
+    totalFrom: string;
+    totalTo: number;
+    totalGas: number;
+    gasPrice: number;
+    paths: Path[];
+    tokens: FireBirdTokens;
+  };
+}
+
+interface Path {
+  amountFrom: string;
+  amountTo: string;
+  gas: number;
+  swaps: Swap[];
+}
+
+interface Swap {
+  from: `0x${string}`;
+  to: `0x${string}`;
+  amountFrom: string;
+  amountTo: string;
+  pool: `0x${string}`;
+  swapFee: number;
+  dex: string;
+  meta?: {
+    vaultAddress: `0x${string}`;
+  };
+}
+
+interface FireBirdTokens {
+  [address: `0x${string}`]: {
+    address: `0x${string}`;
+    decimals: number;
+    name: string;
+    symbol: string;
+    price: number;
+  };
+}
+
 export type {
   BaseAsset,
   Pair,
+  Gauge,
+  VeDistReward,
+  Bribe,
   RouteAsset,
   TokenForPrice,
-  Contracts,
-  TestnetContracts,
-  CantoContracts,
-  ArbitrumContracts,
   VeToken,
+  GovToken,
   Vote,
+  Votes,
   VestNFT,
   DexScrennerPair,
   DefiLlamaTokenPrice,
   ITransaction,
+  EthWindow,
+  QuoteSwapPayload,
+  QuoteSwapResponse,
+  Path,
+  Swap,
+  FireBirdTokens,
 };
+
+export { hasGauge, isGaugeReward, isBaseAsset, TransactionStatus };

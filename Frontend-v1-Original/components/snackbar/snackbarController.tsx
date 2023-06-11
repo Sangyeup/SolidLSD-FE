@@ -1,26 +1,25 @@
-import React, { Component } from "react";
-import { withStyles } from "@mui/styles";
+import React from "react";
+
+import { ACTIONS } from "../../stores/constants/constants";
+import stores from "../../stores";
 
 import Snackbar from "./snackbar";
 
-import { ACTIONS } from "../../stores/constants/constants";
-
-import stores from "../../stores";
 const emitter = stores.emitter;
 
-const styles = (theme) => ({
-  root: {},
-});
-
-const SnackbarController = (props) => {
-  const [state, setState] = React.useState({
+const SnackbarController = () => {
+  const [state, setState] = React.useState<{
+    open: boolean;
+    snackbarType: null | string;
+    snackbarMessage: null | string;
+  }>({
     open: false,
     snackbarType: null,
     snackbarMessage: null,
   });
 
   React.useEffect(() => {
-    const showError = (error) => {
+    const showError = (error: Error) => {
       const snackbarObj = {
         snackbarMessage: null,
         snackbarType: null,
@@ -40,7 +39,7 @@ const SnackbarController = (props) => {
       }
     };
 
-    const showHash = ({ txHash }) => {
+    const showHash = ({ txHash }: { txHash: string }) => {
       const snackbarObj = {
         snackbarMessage: null,
         snackbarType: null,
@@ -58,11 +57,31 @@ const SnackbarController = (props) => {
       });
     };
 
+    const showWarn = ({ warning }: { warning: string }) => {
+      const snackbarObj = {
+        snackbarMessage: null,
+        snackbarType: null,
+        open: false,
+      };
+      setState(snackbarObj);
+
+      setTimeout(() => {
+        const snackbarObj = {
+          snackbarMessage: warning,
+          snackbarType: "Warning",
+          open: true,
+        };
+        setState(snackbarObj);
+      });
+    };
+
     emitter.on(ACTIONS.ERROR, showError);
     emitter.on(ACTIONS.TX_SUBMITTED, showHash);
+    emitter.on(ACTIONS.WARNING, showWarn);
     return () => {
       emitter.removeListener(ACTIONS.ERROR, showError);
       emitter.removeListener(ACTIONS.TX_SUBMITTED, showHash);
+      emitter.removeListener(ACTIONS.WARNING, showWarn);
     };
   }, []);
 
@@ -78,4 +97,4 @@ const SnackbarController = (props) => {
   );
 };
 
-export default withStyles(styles)(SnackbarController);
+export default SnackbarController;

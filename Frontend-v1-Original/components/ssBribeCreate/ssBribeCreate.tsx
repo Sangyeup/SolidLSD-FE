@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/router";
 import {
   Paper,
@@ -11,51 +11,57 @@ import {
   Dialog,
   MenuItem,
   IconButton,
-  Select,
 } from "@mui/material";
 import { Search, ArrowBack, DeleteOutline } from "@mui/icons-material";
 import BigNumber from "bignumber.js";
-import { formatCurrency } from "../../utils/utils";
-import classes from "./ssBribeCreate.module.css";
 
+import { formatCurrency } from "../../utils/utils";
 import stores from "../../stores";
 import { ACTIONS, ETHERSCAN_URL } from "../../stores/constants/constants";
-import { BaseAsset, Pair } from "../../stores/types/types";
+import { BaseAsset, Gauge, hasGauge } from "../../stores/types/types";
 
-export default function ssBribeCreate() {
+import classes from "./ssBribeCreate.module.css";
+
+export default function BribeCreate() {
   const router = useRouter();
   const [createLoading, setCreateLoading] = useState(false);
 
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState<string | false>(false);
-  const [asset, setAsset] = useState<BaseAsset>(null);
+  const [asset, setAsset] = useState<BaseAsset | null>(null);
   const [assetOptions, setAssetOptions] = useState<BaseAsset[]>([]);
-  const [gauge, setGauge] = useState<Pair>(null);
-  const [gaugeOptions, setGaugeOptions] = useState([]);
+  const [gauge, setGauge] = useState<Gauge | null>(null);
+  const [gaugeOptions, setGaugeOptions] = useState<Gauge[]>([]);
 
   const ssUpdated = async () => {
     const storeAssetOptions = stores.stableSwapStore.getStore("baseAssets");
     let filteredStoreAssetOptions = storeAssetOptions.filter((option) => {
+      // @ts-expect-error this is a workaround for the CANTO token
       return option.address !== "CANTO";
     });
     const storePairs = stores.stableSwapStore.getStore("pairs");
     setAssetOptions(filteredStoreAssetOptions);
-    setGaugeOptions(storePairs);
+
+    const filteredPairs = storePairs
+      .filter(hasGauge)
+      .filter((gauge) => gauge.isAliveGauge);
+
+    setGaugeOptions(filteredPairs);
 
     if (filteredStoreAssetOptions.length > 0 && asset == null) {
       setAsset(filteredStoreAssetOptions[0]);
     }
 
-    if (storePairs.length > 0 && gauge == null) {
-      const noteFlowPair = storePairs.filter((pair) => {
-        return pair.symbol === "vAMM-FLOW/NOTE";
+    if (filteredPairs.length > 0 && gauge == null) {
+      const noteFlowPair = filteredPairs.filter((pair) => {
+        return pair.symbol === "vAMM-NOTE/FLOW";
       });
-      setGauge(noteFlowPair[0] ?? storePairs[0]);
+      setGauge(noteFlowPair[0] ?? filteredPairs[0]);
     }
   };
 
   useEffect(() => {
-    const createReturned = (res) => {
+    const createReturned = () => {
       setCreateLoading(false);
       setAmount("");
 
@@ -69,6 +75,7 @@ export default function ssBribeCreate() {
     const assetsUpdated = () => {
       const baseAsset = stores.stableSwapStore.getStore("baseAssets");
       let filteredStoreAssetOptions = baseAsset.filter((option) => {
+        // @ts-expect-error this is a workaround for the CANTO token
         return option.address !== "CANTO";
       });
       setAssetOptions(filteredStoreAssetOptions);
@@ -89,9 +96,9 @@ export default function ssBribeCreate() {
     };
   }, []);
 
-  const setAmountPercent = (input, percent) => {
+  const setAmountPercent = (input: string, percent: number) => {
     setAmountError(false);
-    if (input === "amount") {
+    if (input === "amount" && asset && asset.balance) {
       let am = BigNumber(asset.balance)
         .times(percent)
         .div(100)
@@ -110,9 +117,9 @@ export default function ssBribeCreate() {
       error = true;
     } else {
       if (
-        !asset.balance ||
-        isNaN(+asset.balance) ||
-        BigNumber(asset.balance).lte(0)
+        !asset?.balance ||
+        isNaN(+asset?.balance) ||
+        BigNumber(asset?.balance).lte(0)
       ) {
         setAmountError("Invalid balance");
         error = true;
@@ -143,106 +150,27 @@ export default function ssBribeCreate() {
     }
   };
 
-  const amountChanged = (event) => {
+  const amountChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
     setAmountError(false);
     setAmount(event.target.value);
   };
 
-  const onAssetSelect = (type, value) => {
+  const onAssetSelect = (value: BaseAsset) => {
     setAmountError(false);
     setAsset(value);
   };
 
-  const onGagugeSelect = (event) => {
-    setGauge(event.target.value);
-  };
-
-  const renderMassiveGaugeInput = (type, value, error, options, onChange) => {
-    return (
-      <div className={classes.textField}>
-        <div
-          className={`${classes.massiveInputContainer} ${
-            error && classes.error
-          }`}
-        >
-          <div className={classes.massiveInputAmount}>
-            <Select
-              fullWidth
-              value={value}
-              onChange={onChange}
-              // @ts-expect-error This is because of how material-ui works
-              InputProps={{
-                className: classes.largeInput,
-              }}
-            >
-              {options &&
-                options.map((option) => {
-                  return (
-                    <MenuItem key={option.id} value={option}>
-                      <div className={classes.menuOption}>
-                        <div className={classes.doubleImages}>
-                          <img
-                            className={`${classes.someIcon} ${classes.img1Logo}`}
-                            alt=""
-                            src={
-                              option && option.token0
-                                ? `${option.token0.logoURI}`
-                                : ""
-                            }
-                            height="70px"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).onerror = null;
-                              (e.target as HTMLImageElement).src =
-                                "/tokens/unknown-logo.png";
-                            }}
-                          />
-                          <img
-                            className={`${classes.someIcon} ${classes.img2Logo}`}
-                            alt=""
-                            src={
-                              option && option.token1
-                                ? `${option.token1.logoURI}`
-                                : ""
-                            }
-                            height="70px"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).onerror = null;
-                              (e.target as HTMLImageElement).src =
-                                "/tokens/unknown-logo.png";
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <Typography className={classes.fillerText}>
-                            {option.token0.symbol}/{option.token1.symbol}
-                          </Typography>
-                          <Typography
-                            color="textSecondary"
-                            className={classes.smallerText}
-                          >
-                            {option?.isStable ? "Stable Pool" : "Volatile Pool"}
-                          </Typography>
-                        </div>
-                      </div>
-                    </MenuItem>
-                  );
-                })}
-            </Select>
-          </div>
-        </div>
-      </div>
-    );
+  const onGaugeSelect = (value: Gauge) => {
+    setGauge(value);
   };
 
   const renderMassiveInput = (
-    type,
-    amountValue,
-    amountError,
-    amountChanged,
-    assetValue,
-    assetError,
-    assetOptions,
-    onAssetSelect
+    type: string,
+    amountError: string | false,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void,
+    assetValue: BaseAsset | null,
+    assetOptions: BaseAsset[],
+    onAssetSelect: (_value: BaseAsset) => void
   ) => {
     return (
       <div className={classes.textField}>
@@ -264,12 +192,11 @@ export default function ssBribeCreate() {
         </div>
         <div
           className={`${classes.massiveInputContainer} ${
-            (amountError || assetError) && classes.error
+            amountError && classes.error
           }`}
         >
           <div className={classes.massiveInputAssetSelect}>
             <AssetSelect
-              type={type}
               value={assetValue}
               assetOptions={assetOptions}
               onSelect={onAssetSelect}
@@ -279,7 +206,7 @@ export default function ssBribeCreate() {
             <TextField
               placeholder="0.00"
               fullWidth
-              error={amountError}
+              error={!!amountError}
               helperText={amountError}
               value={amount}
               onChange={amountChanged}
@@ -331,20 +258,16 @@ export default function ssBribeCreate() {
         </div>
         <div className={classes.reAddPadding}>
           <div className={classes.inputsContainer}>
-            {renderMassiveGaugeInput(
-              "gauge",
-              gauge,
-              null,
-              gaugeOptions,
-              onGagugeSelect
-            )}
+            <GaugeSelect
+              value={gauge}
+              gaugeOptions={gaugeOptions}
+              onSelect={onGaugeSelect}
+            />
             {renderMassiveInput(
               "amount",
-              amount,
               amountError,
               amountChanged,
               asset,
-              null,
               assetOptions,
               onAssetSelect
             )}
@@ -377,11 +300,187 @@ export default function ssBribeCreate() {
   );
 }
 
-function AssetSelect({ type, value, assetOptions, onSelect }) {
+function GaugeSelect({
+  value,
+  gaugeOptions,
+  onSelect,
+}: {
+  value: Gauge | null;
+  gaugeOptions: Gauge[];
+  onSelect: (_value: Gauge) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [filteredAssetOptions, setFilteredAssetOptions] = useState([]);
 
+  const openSearch = () => {
+    setOpen(true);
+    setSearch("");
+  };
+
+  const onClose = () => {
+    setSearch("");
+    setOpen(false);
+  };
+
+  const onSearchChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setSearch(event.target.value);
+  };
+
+  const onLocalSelect = (gauge: Gauge) => {
+    setSearch("");
+    setOpen(false);
+    onSelect(gauge);
+  };
+
+  const filteredGaugeOptions = useMemo(() => {
+    const go = gaugeOptions.filter((gauge) => {
+      if (search && search !== "") {
+        return [gauge.address, gauge.token0.symbol, gauge.token1.symbol].some(
+          (s) => s.toLowerCase().includes(search.trim().toLowerCase())
+        );
+      } else {
+        return true;
+      }
+    });
+
+    return go;
+  }, [search, gaugeOptions]);
+
+  return (
+    <>
+      <div
+        className="relative mb-1 min-h-[100px] cursor-pointer rounded-lg border border-slate-500 p-3 transition-colors hover:border-slate-400"
+        onClick={() => {
+          openSearch();
+        }}
+      >
+        <div className="flex w-[calc(100%-24px)] flex-col items-start py-2 px-3 md:flex-row md:items-center">
+          <div className="relative box-content flex h-20 w-36 p-3">
+            <img
+              className="absolute left-0 top-[calc(50%-1.25rem)] h-10 rounded-full border-4 border-deepBlue md:top-3 md:h-16"
+              alt=""
+              src={value && value.token0 ? `${value.token0.logoURI}` : ""}
+              onError={(e) => {
+                (e.target as HTMLImageElement).onerror = null;
+                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+              }}
+            />
+            <img
+              className="absolute left-8 top-[calc(50%-1.25rem)] z-10 h-10 rounded-full border-4 border-deepBlue md:top-3 md:left-14 md:h-16"
+              alt=""
+              src={value && value.token1 ? `${value.token1.logoURI}` : ""}
+              onError={(e) => {
+                (e.target as HTMLImageElement).onerror = null;
+                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+              }}
+            />
+          </div>
+          <div>
+            <Typography className="flex-[1] text-xl md:text-3xl">
+              {value ? `${value.token0.symbol}/${value.token1.symbol}` : ""}
+            </Typography>
+            <Typography color="textSecondary" className="mt-1 text-xs">
+              {value?.isStable ? "Stable Pool" : "Volatile Pool"}
+            </Typography>
+          </div>
+        </div>
+      </div>
+      <Dialog
+        onClose={onClose}
+        aria-labelledby="simple-dialog-title"
+        open={open}
+      >
+        <div className="h-[600px] overflow-y-scroll p-6">
+          <TextField
+            autoFocus
+            variant="outlined"
+            fullWidth
+            placeholder="CANTO, NOTE, 0x..."
+            value={search}
+            onChange={onSearchChanged}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <div className="mt-3 flex w-full flex-col md:min-w-[512px]">
+            {filteredGaugeOptions.map((option) => {
+              return (
+                <MenuItem
+                  key={option.address}
+                  // ok at runtime if MenuItem is an immediate child of Select since value is transferred to data-value.
+                  value={option as any}
+                  onClick={() => {
+                    onLocalSelect(option);
+                  }}
+                >
+                  <div className="flex w-[calc(100%-24px)] flex-col items-start py-2 px-3 md:flex-row md:items-center">
+                    <div className="relative flex h-20 w-36 p-3">
+                      <img
+                        className="absolute left-0 top-[calc(50%-1.25rem)] h-10 rounded-full border-4 border-deepBlue md:top-3 md:h-16"
+                        alt=""
+                        src={
+                          option && option.token0
+                            ? `${option.token0.logoURI}`
+                            : ""
+                        }
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).onerror = null;
+                          (e.target as HTMLImageElement).src =
+                            "/tokens/unknown-logo.png";
+                        }}
+                      />
+                      <img
+                        className="absolute left-8 top-[calc(50%-1.25rem)] z-10 h-10 rounded-full border-4 border-deepBlue md:top-3 md:left-14 md:h-16"
+                        alt=""
+                        src={
+                          option && option.token1
+                            ? `${option.token1.logoURI}`
+                            : ""
+                        }
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).onerror = null;
+                          (e.target as HTMLImageElement).src =
+                            "/tokens/unknown-logo.png";
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <Typography className="flex-[1] text-xl md:text-3xl">
+                        {option.token0.symbol}/{option.token1.symbol}
+                      </Typography>
+                      <Typography
+                        color="textSecondary"
+                        className="mt-1 text-xs"
+                      >
+                        {option?.isStable ? "Stable Pool" : "Volatile Pool"}
+                      </Typography>
+                    </div>
+                  </div>
+                </MenuItem>
+              );
+            })}
+          </div>
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
+function AssetSelect({
+  value,
+  assetOptions,
+  onSelect,
+}: {
+  value: BaseAsset | null;
+  assetOptions: BaseAsset[];
+  onSelect: (_value: BaseAsset) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const [manageLocal, setManageLocal] = useState(false);
 
   const openSearch = () => {
@@ -389,36 +488,29 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
     setSearch("");
   };
 
-  useEffect(
-    function () {
-      let ao = assetOptions.filter((asset) => {
-        if (search && search !== "") {
-          return (
-            asset.address.toLowerCase().includes(search.toLowerCase()) ||
-            asset.symbol.toLowerCase().includes(search.toLowerCase()) ||
-            asset.name.toLowerCase().includes(search.toLowerCase())
-          );
-        } else {
-          return true;
-        }
-      });
+  const filteredAssetOptions = useMemo(() => {
+    const ao = assetOptions.filter((asset) => {
+      if (search && search !== "") {
+        return [asset.address, asset.symbol, asset.name].some((s) =>
+          s.toLowerCase().includes(search.trim().toLowerCase())
+        );
+      } else {
+        return true;
+      }
+    });
 
-      setFilteredAssetOptions(ao);
+    return ao;
+  }, [assetOptions, search]);
 
-      return () => {};
-    },
-    [assetOptions, search]
-  );
-
-  const onSearchChanged = async (event) => {
+  const onSearchChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSearch(event.target.value);
   };
 
-  const onLocalSelect = (type, asset) => {
+  const onLocalSelect = (asset: BaseAsset) => {
     setSearch("");
     setManageLocal(false);
     setOpen(false);
-    onSelect(type, asset);
+    onSelect(asset);
   };
 
   const onClose = () => {
@@ -431,15 +523,15 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
     setManageLocal(!manageLocal);
   };
 
-  const deleteOption = (token) => {
+  const deleteOption = (token: BaseAsset) => {
     stores.stableSwapStore.removeBaseAsset(token);
   };
 
-  const viewOption = (token) => {
+  const viewOption = (token: BaseAsset) => {
     window.open(`${ETHERSCAN_URL}token/${token.address}`, "_blank");
   };
 
-  const renderManageOption = (type, asset, idx) => {
+  const renderManageOption = (asset: BaseAsset, idx: number) => {
     return (
       <MenuItem
         key={asset.address + "_" + idx}
@@ -485,13 +577,13 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
     );
   };
 
-  const renderAssetOption = (type, asset, idx) => {
+  const renderAssetOption = (asset: BaseAsset, idx: number) => {
     return (
       <MenuItem
         key={asset.address + "_" + idx}
         className={classes.assetSelectMenu}
         onClick={() => {
-          onLocalSelect(type, asset);
+          onLocalSelect(asset);
         }}
       >
         <div className={classes.assetSelectMenuItem}>
@@ -535,7 +627,7 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
               autoFocus
               variant="outlined"
               fullWidth
-              placeholder="WCANTO, MIM, 0x..."
+              placeholder="CANTO, NOTE, 0x..."
               value={search}
               onChange={onSearchChanged}
               InputProps={{
@@ -554,7 +646,7 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
                     return option.local === true;
                   })
                   .map((asset, idx) => {
-                    return renderManageOption(type, asset, idx);
+                    return renderManageOption(asset, idx);
                   })
               : []}
           </div>
@@ -570,27 +662,26 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
     return (
       <>
         <div className={classes.searchContainer}>
-          <div className={classes.searchInline}>
-            <TextField
-              autoFocus
-              variant="outlined"
-              fullWidth
-              placeholder="WCANTO, MIM, 0x..."
-              value={search}
-              onChange={onSearchChanged}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <Search />
-                  </InputAdornment>
-                ),
-              }}
-            />
-          </div>
+          <TextField
+            autoFocus
+            variant="outlined"
+            fullWidth
+            placeholder="CANTO, NOTE, 0x..."
+            value={search}
+            onChange={onSearchChanged}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search />
+                </InputAdornment>
+              ),
+            }}
+          />
           <div className={classes.assetSearchResults}>
             {filteredAssetOptions
               ? filteredAssetOptions
                   .sort((a, b) => {
+                    if (!a.balance || !b.balance) return 0;
                     if (BigNumber(a.balance).lt(b.balance)) return 1;
                     if (BigNumber(a.balance).gt(b.balance)) return -1;
                     if (a.symbol.toLowerCase() < b.symbol.toLowerCase())
@@ -600,7 +691,7 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
                     return 0;
                   })
                   .map((asset, idx) => {
-                    return renderAssetOption(type, asset, idx);
+                    return renderAssetOption(asset, idx);
                   })
               : []}
           </div>
@@ -613,7 +704,7 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
   };
 
   return (
-    <React.Fragment>
+    <>
       <div
         className={classes.displaySelectContainer}
         onClick={() => {
@@ -643,6 +734,6 @@ function AssetSelect({ type, value, assetOptions, onSelect }) {
         {!manageLocal && renderOptions()}
         {manageLocal && renderManageLocal()}
       </Dialog>
-    </React.Fragment>
+    </>
   );
 }

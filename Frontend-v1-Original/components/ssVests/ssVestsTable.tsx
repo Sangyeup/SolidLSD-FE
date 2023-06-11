@@ -1,6 +1,4 @@
 import React, { useState } from "react";
-import PropTypes from "prop-types";
-import { makeStyles } from "@mui/styles";
 import Skeleton from "@mui/lab/Skeleton";
 import {
   Paper,
@@ -8,55 +6,53 @@ import {
   Table,
   TableBody,
   TableCell,
-  InputAdornment,
   TableContainer,
   TableHead,
   TableRow,
   TableSortLabel,
   TablePagination,
   Typography,
-  Tooltip,
   Toolbar,
   Grid,
+  Tooltip,
+  Alert,
+  Menu,
+  MenuItem,
 } from "@mui/material";
 import { useRouter } from "next/router";
-import { EnhancedEncryptionOutlined } from "@mui/icons-material";
+import {
+  EnhancedEncryptionOutlined,
+  Check,
+  Close,
+  KeyboardArrowDown,
+  KeyboardArrowUp,
+  RestartAlt,
+  Merge,
+  TrendingUp,
+} from "@mui/icons-material";
 import moment from "moment";
+import BigNumber from "bignumber.js";
+import Link from "next/link";
 
+import stores from "../../stores";
 import { formatCurrency } from "../../utils/utils";
-
-function descendingComparator(a, b, orderBy) {
-  if (!a || !b) {
-    return 0;
-  }
-
-  if (b[orderBy] < a[orderBy]) {
-    return -1;
-  }
-  if (b[orderBy] > a[orderBy]) {
-    return 1;
-  }
-  return 0;
-}
-
-function getComparator(order, orderBy) {
-  return order === "desc"
-    ? (a, b) => descendingComparator(a, b, orderBy)
-    : (a, b) => -descendingComparator(a, b, orderBy);
-}
-
-function stableSort(array, comparator) {
-  const stabilizedThis = array.map((el, index) => [el, index]);
-  stabilizedThis.sort((a, b) => {
-    const order = comparator(a[0], b[0]);
-    if (order !== 0) return order;
-    return a[1] - b[1];
-  });
-  return stabilizedThis.map((el) => el[0]);
-}
+import { ACTIONS } from "../../stores/constants/constants";
+import { GovToken, VestNFT, VeToken } from "../../stores/types/types";
 
 const headCells = [
-  { id: "NFT", numeric: false, disablePadding: false, label: "Pair" },
+  { id: "NFT", numeric: false, disablePadding: false, label: "NFT" },
+  {
+    id: "Voted",
+    numeric: false,
+    disablePadding: false,
+    label: "Voted This Epoch",
+  },
+  {
+    id: "Reset",
+    numeric: false,
+    disablePadding: false,
+    label: "Reset",
+  },
   {
     id: "Locked Amount",
     numeric: true,
@@ -76,25 +72,44 @@ const headCells = [
     label: "Vest Expires",
   },
   {
+    id: "Influence",
+    numeric: true,
+    disablePadding: false,
+    label: "Voting Power",
+  },
+  {
     id: "",
     numeric: true,
     disablePadding: false,
     label: "Actions",
   },
-];
+] as const;
 
-function EnhancedTableHead(props) {
-  const { classes, order, orderBy, onRequestSort } = props;
-  const createSortHandler = (property) => (event) => {
-    onRequestSort(event, property);
-  };
+type OrderBy = (typeof headCells)[number]["id"];
+
+function EnhancedTableHead({
+  order,
+  orderBy,
+  onRequestSort,
+}: {
+  order: "asc" | "desc";
+  orderBy: OrderBy;
+  onRequestSort: (
+    _event: React.MouseEvent<unknown>,
+    _property: OrderBy
+  ) => void;
+}) {
+  const createSortHandler =
+    (property: OrderBy) => (event: React.MouseEvent<unknown>) => {
+      onRequestSort(event, property);
+    };
 
   return (
     <TableHead>
       <TableRow>
         {headCells.map((headCell) => (
           <TableCell
-            className={classes.overrideTableHead}
+            className="border-b border-b-[rgba(104,108,122,0.2)]"
             key={headCell.id}
             align={headCell.numeric ? "right" : "left"}
             padding={"normal"}
@@ -105,11 +120,11 @@ function EnhancedTableHead(props) {
               direction={orderBy === headCell.id ? order : "asc"}
               onClick={createSortHandler(headCell.id)}
             >
-              <Typography variant="h5" className={classes.headerText}>
+              <Typography variant="h5" className="text-xs font-extralight">
                 {headCell.label}
               </Typography>
               {orderBy === headCell.id ? (
-                <span className={classes.visuallyHidden}>
+                <span className="absolute top-5 m-[-1px] h-[1px] w-[1px] overflow-hidden text-clip border-0 border-none p-0">
                   {order === "desc" ? "sorted descending" : "sorted ascending"}
                 </span>
               ) : null}
@@ -121,188 +136,15 @@ function EnhancedTableHead(props) {
   );
 }
 
-EnhancedTableHead.propTypes = {
-  classes: PropTypes.object.isRequired,
-  onRequestSort: PropTypes.func.isRequired,
-  order: PropTypes.oneOf(["asc", "desc"]).isRequired,
-  orderBy: PropTypes.string.isRequired,
-};
-
-const useStyles = makeStyles((theme) => ({
-  root: {
-    width: "100%",
-  },
-  assetTableRow: {
-    "&:hover": {
-      background: "rgba(104,108,122,0.05)",
-    },
-  },
-  paper: {
-    width: "100%",
-    // @ts-expect-error material ui theme is not typed by default
-    marginBottom: theme.spacing(2),
-  },
-  visuallyHidden: {
-    border: 0,
-    clip: "rect(0 0 0 0)",
-    height: 1,
-    margin: -1,
-    overflow: "hidden",
-    padding: 0,
-    position: "absolute",
-    top: 20,
-    width: 1,
-  },
-  inline: {
-    display: "flex",
-    alignItems: "center",
-  },
-  icon: {
-    marginRight: "12px",
-  },
-  textSpaced: {
-    lineHeight: "1.5",
-    fontWeight: "200",
-    fontSize: "12px",
-  },
-  headerText: {
-    fontWeight: "200",
-    fontSize: "12px",
-  },
-  cell: {},
-  cellSuccess: {
-    color: "#4eaf0a",
-  },
-  cellAddress: {
-    cursor: "pointer",
-  },
-  aligntRight: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "flex-end",
-  },
-  skelly: {
-    marginBottom: "12px",
-    marginTop: "12px",
-  },
-  skelly1: {
-    marginBottom: "12px",
-    marginTop: "24px",
-  },
-  skelly2: {
-    margin: "12px 6px",
-  },
-  tableBottomSkelly: {
-    display: "flex",
-    justifyContent: "flex-end",
-  },
-  assetInfo: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flex: 1,
-    padding: "24px",
-    width: "100%",
-    flexWrap: "wrap",
-    borderBottom: "1px solid rgba(104, 108, 122, 0.25)",
-    background:
-      "radial-gradient(circle, rgba(63,94,251,0.7) 0%, rgba(47,128,237,0.7) 48%) rgba(63,94,251,0.7) 100%",
-  },
-  assetInfoError: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flex: 1,
-    padding: "24px",
-    width: "100%",
-    flexWrap: "wrap",
-    borderBottom: "1px rgba(104, 108, 122, 0.25)",
-    background: "#dc3545",
-  },
-  infoField: {
-    flex: 1,
-  },
-  flexy: {
-    padding: "6px 0px",
-  },
-  overrideCell: {
-    padding: "0px",
-  },
-  hoverRow: {
-    cursor: "pointer",
-  },
-  statusLiquid: {
-    color: "#dc3545",
-  },
-  statusWarning: {
-    color: "#FF9029",
-  },
-  statusSafe: {
-    color: "green",
-  },
-  img1Logo: {
-    position: "absolute",
-    left: "0px",
-    top: "0px",
-    borderRadius: "30px",
-  },
-  img2Logo: {
-    position: "absolute",
-    left: "20px",
-    zIndex: "1",
-    top: "0px",
-  },
-  overrideTableHead: {
-    borderBottom: "1px solid rgba(104,108,122,0.2) !important",
-  },
-  doubleImages: {
-    display: "flex",
-    position: "relative",
-    width: "70px",
-    height: "35px",
-  },
-  buttonOverride: {
-    color: "rgb(6, 211, 215)",
-    background: "#272826",
-    fontWeight: "700",
-    width: "100%",
-    "&:hover": {
-      background: "rgb(19, 44, 60)",
-    },
-  },
-  toolbar: {
-    margin: "24px 0px",
-    padding: "0px",
-  },
-  tableContainer: {
-    border: "1px solid rgba(104, 108, 122, 0.25)",
-    width: "100%",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "flex-end",
-  },
-  actionButtonText: {
-    fontSize: "15px",
-    fontWeight: "700",
-  },
-}));
-
-const EnhancedTableToolbar = (props) => {
-  const classes = useStyles();
+const EnhancedTableToolbar = () => {
   const router = useRouter();
-
-  const [search, setSearch] = useState("");
-
-  const onSearchChanged = (event) => {
-    setSearch(event.target.value);
-  };
 
   const onCreate = () => {
     router.push("/vest/create");
   };
 
   return (
-    <Toolbar className={classes.toolbar}>
+    <Toolbar className="my-6 mx-0 p-0">
       <Grid container spacing={1}>
         <Grid lg="auto" md={12} sm={12} xs={12} item>
           <Button
@@ -310,12 +152,10 @@ const EnhancedTableToolbar = (props) => {
             color="secondary"
             startIcon={<EnhancedEncryptionOutlined />}
             size="large"
-            className={classes.buttonOverride}
+            className="w-full bg-primaryBg font-bold text-cantoGreen hover:bg-[rgb(19,44,60)]"
             onClick={onCreate}
           >
-            <Typography className={classes.actionButtonText}>
-              Create Lock
-            </Typography>
+            <Typography className="text-base font-bold">Create Lock</Typography>
           </Button>
         </Grid>
         <Grid item lg={true} md={true} sm={false} xs={false}></Grid>
@@ -324,25 +164,40 @@ const EnhancedTableToolbar = (props) => {
   );
 };
 
-export default function EnhancedTable({ vestNFTs, govToken, veToken }) {
-  const classes = useStyles();
+export default function EnhancedTable({
+  vestNFTs,
+  govToken,
+  veToken,
+}: {
+  vestNFTs: VestNFT[];
+  govToken: GovToken | null;
+  veToken: VeToken | null;
+}) {
   const router = useRouter();
 
-  const [order, setOrder] = React.useState("desc");
-  const [orderBy, setOrderBy] = React.useState("balance");
+  const [order, setOrder] = React.useState<"asc" | "desc">("desc");
+  const [orderBy, setOrderBy] = React.useState<OrderBy>("Lock Value");
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [page, setPage] = useState(0);
 
-  const handleChangePage = (event, newPage) => {
+  const handleChangePage = (
+    event: React.MouseEvent<HTMLButtonElement, MouseEvent> | null,
+    newPage: number
+  ) => {
     setPage(newPage);
   };
 
-  const handleChangeRowsPerPage = (event) => {
+  const handleChangeRowsPerPage = (
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
     setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
   };
 
-  const handleRequestSort = (event, property) => {
+  const handleRequestSort = (
+    event: React.MouseEvent<unknown, MouseEvent>,
+    property: OrderBy
+  ) => {
     const isAsc = orderBy === property && order === "asc";
     setOrder(isAsc ? "desc" : "asc");
     setOrderBy(property);
@@ -350,58 +205,80 @@ export default function EnhancedTable({ vestNFTs, govToken, veToken }) {
 
   if (!vestNFTs) {
     return (
-      <div className={classes.root}>
+      <div className="w-full">
         <Skeleton
           variant="rectangular"
           width={"100%"}
           height={40}
-          className={classes.skelly1}
+          className="mb-3 mt-6"
         />
         <Skeleton
           variant="rectangular"
           width={"100%"}
-          height={70}
-          className={classes.skelly}
+          height={40}
+          className="my-3"
         />
         <Skeleton
           variant="rectangular"
           width={"100%"}
-          height={70}
-          className={classes.skelly}
+          height={40}
+          className="my-3"
         />
         <Skeleton
           variant="rectangular"
           width={"100%"}
-          height={70}
-          className={classes.skelly}
+          height={40}
+          className="my-3"
         />
         <Skeleton
           variant="rectangular"
           width={"100%"}
-          height={70}
-          className={classes.skelly}
+          height={40}
+          className="my-3"
         />
         <Skeleton
           variant="rectangular"
           width={"100%"}
-          height={70}
-          className={classes.skelly}
+          height={40}
+          className="my-3"
         />
       </div>
     );
   }
 
-  const onView = (nft) => {
+  const onView = (nft: VestNFT) => {
     router.push(`/vest/${nft.id}`);
   };
 
-  const emptyRows =
-    rowsPerPage - Math.min(rowsPerPage, vestNFTs.length - page * rowsPerPage);
+  const onReset = (nft: {
+    lockAmount: string;
+    lockValue: string;
+    lockEnds: string;
+    id: string;
+  }) => {
+    stores.dispatcher.dispatch({
+      type: ACTIONS.RESET_VEST,
+      content: { tokenID: nft.id },
+    });
+  };
+
+  // const emptyRows =
+  //   rowsPerPage - Math.min(rowsPerPage, vestNFTs.length - page * rowsPerPage);
 
   return (
-    <div className={classes.root}>
+    <div className="w-full">
       <EnhancedTableToolbar />
-      <Paper elevation={0} className={classes.tableContainer}>
+      <Paper
+        elevation={0}
+        className="flex w-full flex-col items-end border border-[rgba(104,108,122,0.25)]"
+      >
+        <Alert
+          severity="info"
+          className="w-full rounded-br-none rounded-bl-none"
+        >
+          You can either vote or reset in the same epoch, but not both. NFTs
+          voted in the past will have to be reset first to merge.
+        </Alert>
         <TableContainer>
           <Table
             aria-labelledby="tableTitle"
@@ -409,7 +286,6 @@ export default function EnhancedTable({ vestNFTs, govToken, veToken }) {
             aria-label="enhanced table"
           >
             <EnhancedTableHead
-              classes={classes}
               order={order}
               orderBy={orderBy}
               onRequestSort={handleRequestSort}
@@ -421,91 +297,16 @@ export default function EnhancedTable({ vestNFTs, govToken, veToken }) {
                   if (!row) {
                     return null;
                   }
-                  const labelId = `enhanced-table-checkbox-${index}`;
-
                   return (
-                    <TableRow key={labelId} className={classes.assetTableRow}>
-                      <TableCell className={classes.cell}>
-                        <div className={classes.inline}>
-                          <div className={classes.doubleImages}>
-                            <img
-                              className={classes.img1Logo}
-                              src={govToken?.logoURI}
-                              width="35"
-                              height="35"
-                              alt=""
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).onerror = null;
-                                (e.target as HTMLImageElement).src =
-                                  "/tokens/unknown-logo.png";
-                              }}
-                            />
-                          </div>
-                          <div>
-                            <Typography
-                              variant="h2"
-                              className={classes.textSpaced}
-                            >
-                              {row.id}
-                            </Typography>
-                            <Typography
-                              variant="h5"
-                              className={classes.textSpaced}
-                              color="textSecondary"
-                            >
-                              NFT ID
-                            </Typography>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className={classes.cell} align="right">
-                        <Typography variant="h2" className={classes.textSpaced}>
-                          {formatCurrency(row.lockAmount)}
-                        </Typography>
-                        <Typography
-                          variant="h5"
-                          className={classes.textSpaced}
-                          color="textSecondary"
-                        >
-                          {govToken?.symbol}
-                        </Typography>
-                      </TableCell>
-                      <TableCell className={classes.cell} align="right">
-                        <Typography variant="h2" className={classes.textSpaced}>
-                          {formatCurrency(row.lockValue)}
-                        </Typography>
-                        <Typography
-                          variant="h5"
-                          className={classes.textSpaced}
-                          color="textSecondary"
-                        >
-                          {veToken?.symbol}
-                        </Typography>
-                      </TableCell>
-                      <TableCell className={classes.cell} align="right">
-                        <Typography variant="h2" className={classes.textSpaced}>
-                          {moment.unix(row.lockEnds).format("YYYY-MM-DD")}
-                        </Typography>
-                        <Typography
-                          variant="h5"
-                          className={classes.textSpaced}
-                          color="textSecondary"
-                        >
-                          Expires {moment.unix(row.lockEnds).fromNow()}
-                        </Typography>
-                      </TableCell>
-                      <TableCell className={classes.cell} align="right">
-                        <Button
-                          variant="outlined"
-                          color="primary"
-                          onClick={() => {
-                            onView(row);
-                          }}
-                        >
-                          Manage
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                    <MyTableRow
+                      key={row.id}
+                      row={row}
+                      index={index}
+                      govToken={govToken}
+                      veToken={veToken}
+                      onReset={onReset}
+                      onView={onView}
+                    />
                   );
                 })}
             </TableBody>
@@ -523,4 +324,269 @@ export default function EnhancedTable({ vestNFTs, govToken, veToken }) {
       </Paper>
     </div>
   );
+}
+
+function MyTableRow(props: {
+  row: VestNFT;
+  index: number;
+  govToken: GovToken | null;
+  veToken: VeToken | null;
+  onReset: any;
+  onView: any;
+}) {
+  const { row, index, govToken, veToken, onReset, onView } = props;
+  const influence =
+    row.influence * 100 > 0.001
+      ? `${(row.influence * 100).toFixed(3)}%`
+      : "<0.001%";
+  const labelId = `enhanced-table-checkbox-${index}`;
+
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const open = Boolean(anchorEl);
+  const handleClick = (event: React.MouseEvent<HTMLElement>) => {
+    setAnchorEl(event.currentTarget);
+  };
+  const handleClose = () => {
+    setAnchorEl(null);
+  };
+
+  return (
+    <TableRow key={labelId} className="hover:bg-[rgba(104,108,122,0.05)]">
+      <TableCell>
+        <div className="flex items-center">
+          <div className="relative flex h-9 w-[70px]">
+            <img
+              className="absolute left-0 top-0 rounded-[30px]"
+              src={govToken?.logoURI || undefined}
+              width="35"
+              height="35"
+              alt=""
+              onError={(e) => {
+                (e.target as HTMLImageElement).onerror = null;
+                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+              }}
+            />
+          </div>
+          <div>
+            <Typography variant="h2" className="text-xs font-extralight">
+              {row.id}
+            </Typography>
+            <Typography
+              variant="h5"
+              className="text-xs font-extralight"
+              color="textSecondary"
+            >
+              NFT ID
+            </Typography>
+          </div>
+        </div>
+      </TableCell>
+      <TableCell>
+        <Typography variant="h2" className="text-xs font-extralight">
+          {row.actionedInCurrentEpoch && !row.reset ? (
+            <Check className="fill-green-500" />
+          ) : (
+            <Close className="fill-red-500" />
+          )}
+        </Typography>
+        {row.actionedInCurrentEpoch &&
+        !row.reset &&
+        Number(row.lastVoted) !== 0 ? (
+          <Typography
+            variant="h5"
+            className="text-xs font-extralight"
+            color="textSecondary"
+          >
+            Voted on: {new Date(Number(row.lastVoted) * 1000).toLocaleString()}
+          </Typography>
+        ) : null}
+        {/* show last voted so users can tell to reset or not */}
+        {!row.actionedInCurrentEpoch && Number(row.lastVoted) !== 0 ? (
+          <Typography
+            variant="h5"
+            className="text-xs font-extralight"
+            color="textSecondary"
+          >
+            Last Voted:{" "}
+            {new Date(Number(row.lastVoted) * 1000).toLocaleString()}
+          </Typography>
+        ) : null}
+      </TableCell>
+      <TableCell>
+        <Typography variant="h2" className="text-xs font-extralight">
+          {row.reset ? (
+            <Check className="fill-green-500" />
+          ) : (
+            <Close className="fill-red-500" />
+          )}
+        </Typography>
+        {row.reset ? (
+          <Typography
+            variant="h5"
+            className="text-xs font-extralight"
+            color="textSecondary"
+          >
+            Reset on: {new Date(Number(row.lastVoted) * 1000).toLocaleString()}
+          </Typography>
+        ) : null}
+      </TableCell>
+      <TableCell align="right">
+        <Typography variant="h2" className="text-xs font-extralight">
+          {formatCurrency(row.lockAmount)}
+        </Typography>
+        <Typography
+          variant="h5"
+          className="text-xs font-extralight"
+          color="textSecondary"
+        >
+          {govToken?.symbol}
+        </Typography>
+      </TableCell>
+      <TableCell align="right">
+        <Typography variant="h2" className="text-xs font-extralight">
+          {formatCurrency(row.lockValue)}
+        </Typography>
+        <Typography
+          variant="h5"
+          className="text-xs font-extralight"
+          color="textSecondary"
+        >
+          {veToken?.symbol}
+        </Typography>
+      </TableCell>
+      <TableCell align="right">
+        <Typography variant="h2" className="text-xs font-extralight">
+          {moment.unix(+row.lockEnds).format("YYYY-MM-DD")}
+        </Typography>
+        <Typography
+          variant="h5"
+          className="text-xs font-extralight"
+          color="textSecondary"
+        >
+          Expires {moment.unix(+row.lockEnds).fromNow()}
+        </Typography>
+      </TableCell>
+      <TableCell align="right">
+        <Tooltip title={`${(row.influence * 100).toFixed(7)}%`}>
+          <Typography variant="h2" className="text-xs font-extralight">
+            {influence}
+          </Typography>
+        </Tooltip>
+      </TableCell>
+      <TableCell
+        align="right"
+        className="flex flex-col space-y-2 lg:flex-row lg:justify-end lg:space-y-0 lg:space-x-2"
+      >
+        <Button
+          variant="outlined"
+          color="primary"
+          endIcon={open ? <KeyboardArrowUp /> : <KeyboardArrowDown />}
+          onClick={handleClick}
+        >
+          Menu
+        </Button>
+        <Menu
+          sx={{
+            "& .MuiPaper-root": {
+              minWidth: "150px",
+            },
+          }}
+          anchorEl={anchorEl}
+          open={open}
+          onClose={handleClose}
+          elevation={0}
+          anchorOrigin={{
+            vertical: "bottom",
+            horizontal: "right",
+          }}
+          transformOrigin={{
+            vertical: "top",
+            horizontal: "right",
+          }}
+        >
+          <MenuItem
+            disableRipple
+            disabled={row.actionedInCurrentEpoch}
+            onClick={() => {
+              handleClose();
+              onReset(row);
+            }}
+          >
+            <RestartAlt className="mr-2" /> <span>Reset</span>
+          </MenuItem>
+          {/*
+      1. last voted is 0, i.e., totally new nft
+      2. actioned in current epoch, and that action is reset
+       */}
+          <MenuItem
+            disableRipple
+            disabled={
+              !(
+                Number(row.lastVoted) === 0 ||
+                (row.actionedInCurrentEpoch && row.reset)
+              )
+            }
+          >
+            <Link
+              href={`/vest/${row.id}/merge`}
+              className="flex items-center space-x-2"
+            >
+              <a>
+                <Merge className="mr-2" /> <span>Merge</span>
+              </a>
+            </Link>
+          </MenuItem>
+          <MenuItem disableRipple onClick={() => onView(row)}>
+            <TrendingUp className="mr-2" /> Manage
+          </MenuItem>
+        </Menu>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function descendingComparator(a: VestNFT, b: VestNFT, orderBy: OrderBy) {
+  if (!a || !b) {
+    return 0;
+  }
+
+  switch (orderBy) {
+    case "NFT":
+      return BigNumber(b.id).minus(a.id).toNumber();
+    case "Voted":
+      if (b.actionedInCurrentEpoch && !a.actionedInCurrentEpoch) {
+        return -1;
+      }
+      if (!b.actionedInCurrentEpoch && a.actionedInCurrentEpoch) {
+        return 1;
+      }
+      return 0;
+    case "Lock Expires":
+      return BigNumber(b.lockEnds).minus(a.lockEnds).toNumber();
+    case "Locked Amount":
+      return BigNumber(b.lockAmount).minus(a.lockAmount).toNumber();
+    case "Lock Value":
+      return BigNumber(b.lockValue).minus(a.lockValue).toNumber();
+  }
+
+  return 0;
+}
+
+function getComparator(order: "asc" | "desc", orderBy: OrderBy) {
+  return order === "desc"
+    ? (a: VestNFT, b: VestNFT) => descendingComparator(a, b, orderBy)
+    : (a: VestNFT, b: VestNFT) => -descendingComparator(a, b, orderBy);
+}
+
+function stableSort(
+  array: VestNFT[],
+  comparator: (_a: VestNFT, _b: VestNFT) => number
+) {
+  const stabilizedThis = array.map((el, index) => [el, index] as const);
+  stabilizedThis.sort((a, b) => {
+    const order = comparator(a[0], b[0]);
+    if (order !== 0) return order;
+    return a[1] - b[1];
+  });
+  return stabilizedThis.map((el) => el[0]);
 }

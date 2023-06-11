@@ -21,7 +21,6 @@ export const WETH_NAME = "Wrapped ETH";
 export const WETH_SYMBOL = "WETH";
 export const WETH_DECIMALS = 18;
 export const WETH_ABI = abis.wethABI;
-export const WETH_IMPL_ABI = abis.wethImplABI;
 
 export const ETH_ADDRESS = "ETH";
 export const ETH_NAME = "ETH";
@@ -50,12 +49,20 @@ export const ERC20_ABI = abis.erc20ABI;
 export const PAIR_ABI = abis.pairABI;
 export const GAUGE_ABI = abis.gaugeABI;
 export const BRIBE_ABI = abis.bribeABI;
+export const BRIBE_FACTORY_ABI = abis.bribeFactoryABI;
+export const WXB_ADDRESS = "0xEA9E24a2979D4ACbdB4CCE6608F6C45F9c4421d7";
+export const X_WXB_ADDRESS = "0xabd64fCF41469BfD1F5074ba28EeDee4cca0E6a6";
+export const XX_WXB_ADDRESS = "0x1E9C436a3F51b08F7BfAF8410465fCbBf7A0ae1C";
 export const TOKEN_ABI = abis.tokenABI;
 
-export const MULTICALL_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"; // what is this???
+export const AUTO_BRIBE_ABI = abis.autoBribeABI;
+export const FAIR_AUCTION_ABI = abis.fairAuctionABI;
 
-export const STABLE_TOKEN_ADDRESS = ""; // need this
+export const MULTICALL_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
-export const MSIG_ADDRESS = "";
+export const STABLE_TOKEN_ADDRESS =
+  "0x80b5a32E4F032B2a058b4F29EC95EEfEEB87aDcd"; // need this
+
+export const MSIG_ADDRESS = "0x13eeB8EdfF60BbCcB24Ec7Dd5668aa246525Dc51";
 
 //LFG

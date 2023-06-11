@@ -20,8 +20,7 @@ export const WETH_ADDRESS = "0xcda739d69067333974cd73a722ab92e5e0ad8a4f"; // fak
 export const WETH_NAME = "WRAPPED ETH";
 export const WETH_SYMBOL = "WETH";
 export const WETH_DECIMALS = 18;
-export const WETH_ABI = abis.wftmABI;
-export const WETH_IMPL_ABI = abis.wethImplABI;
+export const WETH_ABI = abis.wethABI;
 
 // there is something wrong with this Wrapped ETH its not working idk why
 
@@ -44,17 +43,25 @@ export const VE_DIST_ABI = abis.veDistABI;
 export const VOTER_ADDRESS = "0x854086d39955d28317aE3856399312b8Edb1B473";
 export const VOTER_ABI = abis.voterABI;
 
-export const MINTER_ADDRESS = "";
+export const MINTER_ADDRESS = "0x41dc163DA8E280743585fde657cFC8937b0c7F9B";
 export const MINTER_ABI = abis.minterABI;
 
 export const ERC20_ABI = abis.erc20ABI;
 export const PAIR_ABI = abis.pairABI;
 export const GAUGE_ABI = abis.gaugeABI;
 export const BRIBE_ABI = abis.bribeABI;
+export const BRIBE_FACTORY_ABI = abis.bribeFactoryABI;
+export const WXB_ADDRESS = "0xEA9E24a2979D4ACbdB4CCE6608F6C45F9c4421d7";
+export const X_WXB_ADDRESS = "0xabd64fCF41469BfD1F5074ba28EeDee4cca0E6a6";
+export const XX_WXB_ADDRESS = "0x1E9C436a3F51b08F7BfAF8410465fCbBf7A0ae1C";
 export const TOKEN_ABI = abis.tokenABI;
+
+export const AUTO_BRIBE_ABI = abis.autoBribeABI;
+export const FAIR_AUCTION_ABI = abis.fairAuctionABI;
 
 export const MULTICALL_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
-export const STABLE_TOKEN_ADDRESS = ""; // need this
+export const STABLE_TOKEN_ADDRESS =
+  "0x80b5a32E4F032B2a058b4F29EC95EEfEEB87aDcd"; // need this
 
-export const MSIG_ADDRESS = "";
+export const MSIG_ADDRESS = "0x13eeB8EdfF60BbCcB24Ec7Dd5668aa246525Dc51";

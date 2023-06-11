@@ -1,4 +1,4 @@
-import { Component, useState } from "react";
+import { useState } from "react";
 import {
   Snackbar,
   IconButton,
@@ -8,7 +8,6 @@ import {
 } from "@mui/material";
 
 import { colors } from "../../theme/coreTheme";
-
 import { ETHERSCAN_URL } from "../../stores/constants/constants";
 
 const iconStyle = {
@@ -17,8 +16,7 @@ const iconStyle = {
   verticalAlign: "middle",
 };
 
-function CloseIcon(props) {
-  const { color } = props;
+function CloseIcon({ color }: { color?: string }) {
   return (
     <SvgIcon style={{ fontSize: "22px" }}>
       <path
@@ -29,8 +27,7 @@ function CloseIcon(props) {
   );
 }
 
-function SuccessIcon(props) {
-  const { color } = props;
+function SuccessIcon({ color }: { color: string }) {
   return (
     <SvgIcon style={iconStyle}>
       <path
@@ -41,8 +38,7 @@ function SuccessIcon(props) {
   );
 }
 
-function ErrorIcon(props) {
-  const { color } = props;
+function ErrorIcon({ color }: { color: string }) {
   return (
     <SvgIcon style={iconStyle}>
       <path
@@ -53,8 +49,7 @@ function ErrorIcon(props) {
   );
 }
 
-function WarningIcon(props) {
-  const { color } = props;
+function WarningIcon({ color }: { color: string }) {
   return (
     <SvgIcon style={iconStyle}>
       <path
@@ -65,8 +60,7 @@ function WarningIcon(props) {
   );
 }
 
-function InfoIcon(props) {
-  const { color } = props;
+function InfoIcon({ color }: { color: string }) {
   return (
     <SvgIcon style={iconStyle}>
       <path
@@ -77,15 +71,22 @@ function InfoIcon(props) {
   );
 }
 
-function MySnackbar(props) {
+function MySnackbar(props: {
+  open: boolean;
+  type: string | null;
+  message: string | null;
+}) {
   const { open: initialOpen, type, message } = props;
   const [open, setOpen] = useState(initialOpen);
 
-  const handleClick = () => {
-    setOpen(true);
-  };
+  // const handleClick = () => {
+  //   setOpen(true);
+  // };
 
-  const handleClose = (event, reason) => {
+  const handleClose = (
+    event: Event | React.SyntheticEvent<any, Event>,
+    reason: string
+  ) => {
     if (reason === "clickaway") {
       return;
     }
@@ -134,6 +135,7 @@ function MySnackbar(props) {
           variant="text"
           size="small"
           onClick={() => window.open(snackbarMessage, "_blank")}
+          key={snackbarMessage}
         >
           View
         </Button>,
@@ -174,6 +176,7 @@ function MySnackbar(props) {
               verticalAlign: "middle",
               maxWidth: "400px",
               overflowX: "hidden",
+              overflowY: "hidden",
             }}
           >
             <Typography

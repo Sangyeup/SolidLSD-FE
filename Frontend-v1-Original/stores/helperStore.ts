@@ -1,14 +1,14 @@
-import type { AbiItem } from "web3-utils";
-import BigNumber from "bignumber.js";
+import { getContract, formatUnits, parseUnits } from "viem";
 
-import stores from ".";
-import { CONTRACTS, NATIVE_TOKEN } from "./constants/constants";
-
+import viemClient from "./connectors/viem";
+import { CONTRACTS } from "./constants/constants";
 import {
   DefiLlamaTokenPrice,
   DexScrennerPair,
   TokenForPrice,
 } from "./types/types";
+
+import stores from ".";
 
 const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "42161";
 const WEEK = 604800;
@@ -28,16 +28,11 @@ class Helper {
   private dexScrennerEndpoint = "https://api.dexscreener.com/latest/dex/tokens";
   private dexGuruEndpoint =
     "https://api.dev.dex.guru/v1/chain/10/tokens/%/market";
-  private tokenPricesMap = new Map<string, number>();
+  // private tokenPricesMap = new Map<string, number>();
 
-  get getTokenPricesMap() {
-    return this.tokenPricesMap;
-  }
-
-  // TODO: understand token prices in python
-  // setTokenPricesMap = async (tokenPrices: Map<string, number>) => {
-  //   this.tokenPricesMap = tokenPrices;
-  // };
+  // get getTokenPricesMap() {
+  //   return this.tokenPricesMap;
+  // }
 
   getProtocolDefiLlama = async () => {
     const data = await fetch(`${this.defiLlamaBaseUrl}/protocol/velocimeter`);
@@ -45,21 +40,26 @@ class Helper {
     return json as unknown;
   };
 
-  getCurrentTvl = async () => {
-    const response = await fetch(`${this.defiLlamaBaseUrl}/tvl/velocimeter`);
-    const json = await response.json();
-    return json as number;
-  };
+  // getCurrentTvl = async () => {
+  //   const response = await fetch(`${this.defiLlamaBaseUrl}/tvl/velocimeter`);
+  //   const json = await response.json();
+  //   return json as number;
+  // };
 
   getActivePeriod = async () => {
     try {
-      const web3 = await stores.accountStore.getWeb3Provider();
-      const minterContract = new web3.eth.Contract(
-        CONTRACTS.MINTER_ABI as AbiItem[],
-        CONTRACTS.MINTER_ADDRESS
-      );
-      const activePeriod = await minterContract.methods.active_period().call();
-      const activePeriodEnd = parseInt(activePeriod) + WEEK;
+      // const minterContract = new web3.eth.Contract(
+      //   CONTRACTS.MINTER_ABI as AbiItem[],
+      //   CONTRACTS.MINTER_ADDRESS
+      // );
+      const minterContract = getContract({
+        abi: CONTRACTS.MINTER_ABI,
+        address: CONTRACTS.MINTER_ADDRESS,
+        publicClient: viemClient,
+      });
+      const activePeriod = await minterContract.read.active_period();
+
+      const activePeriodEnd = parseFloat(activePeriod.toString()) + WEEK;
       return activePeriodEnd;
     } catch (ex) {
       console.log("EXCEPTION. ACTIVE PERIOD ERROR");
@@ -68,76 +68,85 @@ class Helper {
     }
   };
 
-  updateTokenPrice = async (token: TokenForPrice) => {
-    if (this.tokenPricesMap.has(token.address.toLowerCase())) {
-      return this.tokenPricesMap.get(token.address.toLowerCase());
-    }
+  // updateTokenPrice = async (token: TokenForPrice) => {
+  //   if (this.tokenPricesMap.has(token.address.toLowerCase())) {
+  //     return this.tokenPricesMap.get(token.address.toLowerCase());
+  //   }
 
-    const price = await this._getTokenPrice(token);
-    this.tokenPricesMap.set(token.address.toLowerCase(), price);
-    return price;
-  };
+  //   const price = await this._getTokenPrice(token);
+  //   this.tokenPricesMap.set(token.address.toLowerCase(), price);
+  //   return price;
+  // };
 
   getCirculatingSupply = async () => {
-    const web3 = await stores.accountStore.getWeb3Provider();
-    if (!web3) return;
+    const flowContract = {
+      abi: CONTRACTS.GOV_TOKEN_ABI,
+      address: CONTRACTS.GOV_TOKEN_ADDRESS,
+    } as const;
 
-    const flowContract = new web3.eth.Contract(
-      CONTRACTS.GOV_TOKEN_ABI,
-      CONTRACTS.GOV_TOKEN_ADDRESS
+    const [
+      totalSupply,
+      lockedSupply,
+      flowInMinter,
+      flowInMsig,
+      flowInRewardsDistributor,
+      flowInTimelockerController,
+    ] = await viemClient.multicall({
+      allowFailure: false,
+      contracts: [
+        {
+          ...flowContract,
+          functionName: "totalSupply",
+        },
+        {
+          ...flowContract,
+          functionName: "balanceOf",
+          args: [CONTRACTS.VE_TOKEN_ADDRESS],
+        },
+        {
+          ...flowContract,
+          functionName: "balanceOf",
+          args: [CONTRACTS.MINTER_ADDRESS],
+        },
+        {
+          ...flowContract,
+          functionName: "balanceOf",
+          args: [CONTRACTS.MSIG_ADDRESS],
+        },
+        {
+          ...flowContract,
+          functionName: "balanceOf",
+          args: [CONTRACTS.VE_DIST_ADDRESS],
+        },
+        {
+          ...flowContract,
+          functionName: "balanceOf",
+          args: ["0xd0cC9738866cd82B237A14c92ac60577602d6c18"],
+        },
+      ],
+    });
+
+    const circulatingSupply = formatUnits(
+      totalSupply -
+        lockedSupply -
+        flowInMinter -
+        flowInMsig -
+        flowInRewardsDistributor -
+        flowInTimelockerController,
+      CONTRACTS.GOV_TOKEN_DECIMALS
     );
-    const totalSupply = await flowContract.methods.totalSupply().call();
 
-    const lockedSupply = await flowContract.methods
-      .balanceOf(CONTRACTS.VE_TOKEN_ADDRESS)
-      .call();
-
-    const flowInMinter = await flowContract.methods
-      .balanceOf(CONTRACTS.MINTER_ADDRESS)
-      .call();
-
-    const flowInMsig = await flowContract.methods
-      .balanceOf(CONTRACTS.MSIG_ADDRESS)
-      .call();
-
-    const flowInTimelockerController = await flowContract.methods
-      .balanceOf("0xd0cC9738866cd82B237A14c92ac60577602d6c18")
-      .call();
-
-    const circulatingSupply = BigNumber(totalSupply)
-      .minus(BigNumber(lockedSupply))
-      .minus(BigNumber(flowInMinter))
-      .minus(BigNumber(flowInMsig))
-      .minus(BigNumber(flowInTimelockerController))
-      .div(10 ** NATIVE_TOKEN.decimals)
-      .toNumber();
-
-    return circulatingSupply;
+    return parseFloat(circulatingSupply);
   };
 
   getMarketCap = async () => {
     const circulatingSupply = await this.getCirculatingSupply();
-    const price = await this.updateTokenPrice({
-      address: CONTRACTS.GOV_TOKEN_ADDRESS,
-      decimals: CONTRACTS.GOV_TOKEN_DECIMALS,
-      symbol: CONTRACTS.GOV_TOKEN_SYMBOL,
-    });
+    const price = stores.stableSwapStore
+      .getStore("tokenPrices")
+      .get(CONTRACTS.GOV_TOKEN_ADDRESS.toLowerCase());
+
+    if (!price || !circulatingSupply) return 0;
     return circulatingSupply * price;
-  };
-
-  protected _getTokenPrice = async (token: TokenForPrice) => {
-    let price = 0;
-
-    price = await this._getAggregatedPriceInStables(token);
-
-    if (price === 0) {
-      price = await this._getChainPriceInStables(token);
-    }
-    // TODO this one needs api keys and is not free
-    // if (price === 0) {
-    //   price = await this._getDebankPriceInStables(token);
-    // }
-    return price;
   };
 
   protected _getAggregatedPriceInStables = async (token: TokenForPrice) => {
@@ -175,33 +184,24 @@ class Helper {
   };
 
   protected _getChainPriceInStables = async (token: TokenForPrice) => {
-    const web3 = await stores.accountStore.getWeb3Provider();
-
-    if (!web3) return 0;
-
     if (token.address === CONTRACTS.STABLE_TOKEN_ADDRESS) {
       return 1.0;
     }
 
-    const routerContract = new web3.eth.Contract(
-      CONTRACTS.ROUTER_ABI as AbiItem[],
-      CONTRACTS.ROUTER_ADDRESS
-    );
+    const routerContract = getContract({
+      abi: CONTRACTS.ROUTER_ABI,
+      address: CONTRACTS.ROUTER_ADDRESS,
+      publicClient: viemClient,
+    });
 
     try {
-      const amountOutFromContract: {
-        amount: string;
-        stable: boolean;
-      } = await routerContract.methods
-        .getAmountOut(
-          BigNumber(10).pow(token.decimals),
-          token.address,
-          CONTRACTS.STABLE_TOKEN_ADDRESS
-        )
-        .call();
-      return BigNumber(amountOutFromContract.amount)
-        .div(BigNumber(10).pow(6)) //stablecoin decimals
-        .toNumber();
+      const amountOutFromContract = await routerContract.read.getAmountOut([
+        parseUnits("1", token.decimals),
+        token.address,
+        CONTRACTS.STABLE_TOKEN_ADDRESS,
+      ]);
+      const amountOut = formatUnits(amountOutFromContract[0], 6);
+      return parseFloat(amountOut);
     } catch (ex) {
       return 0;
     }
@@ -247,7 +247,22 @@ class Helper {
       (pair) => pair.baseToken.symbol === token.symbol
     )[0]?.priceUsd;
 
+    if (!price) return 0;
+
     return parseFloat(price);
+  };
+
+  resolveUnstoppableDomain = async (address: `0x${string}` | undefined) => {
+    if (!address) return null;
+    const res = await fetch("/api/u-domains", {
+      method: "POST",
+      body: JSON.stringify({
+        address,
+      }),
+    });
+    const resJson = (await res.json()) as { domain: string };
+    if (!resJson?.domain || resJson?.domain === "") return null;
+    return resJson?.domain as string;
   };
 }
 

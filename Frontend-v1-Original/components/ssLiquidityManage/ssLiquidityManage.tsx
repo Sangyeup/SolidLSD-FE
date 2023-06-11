@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import {
   Paper,
@@ -12,7 +12,6 @@ import {
   IconButton,
   FormControlLabel,
   Switch,
-  Select,
   MenuItem,
   Dialog,
 } from "@mui/material";
@@ -24,6 +23,7 @@ import {
   DeleteOutline,
 } from "@mui/icons-material";
 import BigNumber from "bignumber.js";
+import { isAddress } from "viem";
 
 import stores from "../../stores";
 import {
@@ -32,25 +32,16 @@ import {
   W_NATIVE_ADDRESS,
 } from "../../stores/constants/constants";
 import { formatCurrency } from "../../utils/utils";
+import { BaseAsset, isBaseAsset, Pair } from "../../stores/types/types";
 
-import classes from "./ssLiquidityManage.module.css";
-
-const initialEmptyToken = {
-  id: "0",
-  lockAmount: "0",
-  lockEnds: "0",
-  lockValue: "0",
-};
-
-export default function ssLiquidityManage() {
+export default function LiquidityManage() {
   const router = useRouter();
-  const amount0Ref = useRef(null);
-  const amount1Ref = useRef(null);
+  const amount0Ref = useRef<HTMLInputElement>(null);
+  const amount1Ref = useRef<HTMLInputElement>(null);
 
   const [pairReadOnly, setPairReadOnly] = useState(false);
 
-  const [pair, setPair] = useState(null);
-  const [veToken, setVeToken] = useState(null);
+  const [pair, setPair] = useState<Pair | null>(null);
 
   const [depositLoading, setDepositLoading] = useState(false);
   const [stakeLoading, setStakeLoading] = useState(false);
@@ -64,12 +55,12 @@ export default function ssLiquidityManage() {
 
   const [stable, setStable] = useState(false);
 
-  const [asset0, setAsset0] = useState(null);
-  const [asset1, setAsset1] = useState(null);
-  const [assetOptions, setAssetOptions] = useState([]);
+  const [asset0, setAsset0] = useState<BaseAsset | null>(null);
+  const [asset1, setAsset1] = useState<BaseAsset | null>(null);
+  const [assetOptions, setAssetOptions] = useState<BaseAsset[]>([]);
 
-  const [withdrawAsset, setWithdrawAsset] = useState(null);
-  const [withdrawAassetOptions, setWithdrawAssetOptions] = useState([]);
+  const [withdrawAsset, setWithdrawAsset] = useState<Pair | null>(null);
+  const [withdrawAassetOptions, setWithdrawAssetOptions] = useState<Pair[]>([]);
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawAmountError, setWithdrawAmountError] = useState<
     string | false
@@ -82,43 +73,38 @@ export default function ssLiquidityManage() {
   // const [withdrawAmount1Percent, setWithdrawAmount1Percent] = useState("");
 
   const [activeTab, setActiveTab] = useState("deposit");
-  const [quote, setQuote] = useState(null);
-  const [withdrawQuote, setWithdrawQuote] = useState(null);
+  const [quote, setQuote] = useState<string | null>(null);
+  const [withdrawQuote, setWithdrawQuote] = useState<{
+    amount0: string;
+    amount1: string;
+  } | null>(null);
 
-  const [priorityAsset, setPriorityAsset] = useState(0);
+  const [priorityAsset, setPriorityAsset] = useState<0 | 1>(0);
   const [advanced, setAdvanced] = useState(true);
 
-  const [token, setToken] = useState(initialEmptyToken);
-  const [vestNFTs, setVestNFTs] = useState([]);
-
   const [slippage, setSlippage] = useState("2");
-  const [slippageError, setSlippageError] = useState(false); //TODO setSlippageError if any?
+  const [slippageError] = useState(false); //TODO setSlippageError if any?
 
   const ssUpdated = async () => {
     const storeAssetOptions = stores.stableSwapStore.getStore("baseAssets");
-    const nfts = stores.stableSwapStore.getStore("vestNFTs");
-    const veTok = stores.stableSwapStore.getStore("veToken");
     const pairs = stores.stableSwapStore.getStore("pairs");
 
     const onlyWithBalance = pairs.filter((ppp) => {
       return (
-        BigNumber(ppp.balance).gt(0) ||
-        (ppp.gauge && BigNumber(ppp.gauge.balance).gt(0))
+        (ppp.balance && BigNumber(ppp.balance).gt(0)) ||
+        (ppp.gauge?.balance && BigNumber(ppp.gauge.balance).gt(0))
       );
     });
 
     setWithdrawAssetOptions(onlyWithBalance);
     setAssetOptions(storeAssetOptions);
-    setVeToken(veTok);
-    setVestNFTs(nfts);
 
-    if (nfts.length > 0) {
-      if (token == null || token.lockEnds === "0") {
-        setToken(nfts[0]);
-      }
-    }
-
-    if (router.query.address && router.query.address !== "create") {
+    if (
+      router.query.address &&
+      router.query.address !== "create" &&
+      !Array.isArray(router.query.address) &&
+      isAddress(router.query.address)
+    ) {
       setPairReadOnly(true);
 
       const pp = await stores.stableSwapStore.getPairByAddress(
@@ -126,14 +112,14 @@ export default function ssLiquidityManage() {
       );
       setPair(pp);
 
-      if (pp) {
+      if (pp && isBaseAsset(pp.token0) && isBaseAsset(pp.token1)) {
         setWithdrawAsset(pp);
         setAsset0(pp.token0);
         setAsset1(pp.token1);
         setStable(pp.isStable);
       }
 
-      if (pp && BigNumber(pp.balance).gt(0)) {
+      if (pp && pp.balance && BigNumber(pp.balance).gt(0)) {
         setAdvanced(true);
       }
     } else {
@@ -192,11 +178,29 @@ export default function ssLiquidityManage() {
       setCreateLoading(false);
     };
 
-    const quoteAddReturned = (res) => {
+    const quoteAddReturned = (res: {
+      inputs: {
+        token0: BaseAsset;
+        token1: BaseAsset;
+        amount0: string;
+        amount1: string;
+      };
+      output: string;
+    }) => {
       setQuote(res.output);
     };
 
-    const quoteRemoveReturned = (res) => {
+    const quoteRemoveReturned = (res: {
+      inputs: {
+        token0: BaseAsset;
+        token1: BaseAsset;
+        withdrawAmount: string;
+      };
+      output: {
+        amount0: string;
+        amount1: string;
+      };
+    }) => {
       if (!res) {
         return;
       }
@@ -272,41 +276,45 @@ export default function ssLiquidityManage() {
   };
 
   const callQuoteAddLiquidity = (
-    amountA,
-    amountB,
-    pa,
-    sta,
-    pp,
-    assetA,
-    assetB
+    amountA: string,
+    amountB: string,
+    inputIndex: 0 | 1,
+    stable: boolean,
+    pp: Pair | null,
+    assetA: BaseAsset | null,
+    assetB: BaseAsset | null
   ) => {
     if (!pp) {
+      return null;
+    }
+    if (!assetA || !assetB) {
       return null;
     }
 
     let invert = false;
 
-    //TODO: Add check that asset0.address === pp.token0, otherwise we need to invert the calcs
-
     let addy0 = assetA.address;
     let addy1 = assetB.address;
-
+    // @ts-expect-error workaround for CANTO
     if (assetA.address === "CANTO") {
+      // @ts-expect-error workaround for CANTO
       addy0 = W_NATIVE_ADDRESS;
     }
+    // @ts-expect-error workaround for CANTO
     if (assetB.address === "CANTO") {
+      // @ts-expect-error workaround for CANTO
       addy1 = W_NATIVE_ADDRESS;
     }
 
     if (
-      addy1.toLowerCase() == pp.token0.address.toLowerCase() &&
-      addy0.toLowerCase() == pp.token1.address.toLowerCase()
+      addy1.toLowerCase() === pp.token0.address.toLowerCase() &&
+      addy0.toLowerCase() === pp.token1.address.toLowerCase()
     ) {
       invert = true;
     }
 
-    if (pa == 0) {
-      if (amountA == "") {
+    if (inputIndex === 0) {
+      if (amountA === "") {
         setAmount1("");
       } else {
         if (invert) {
@@ -323,8 +331,8 @@ export default function ssLiquidityManage() {
         setAmount1(amountB);
       }
     }
-    if (pa == 1) {
-      if (amountB == "") {
+    if (inputIndex === 1) {
+      if (amountB === "") {
         setAmount0("");
       } else {
         if (invert) {
@@ -345,8 +353,8 @@ export default function ssLiquidityManage() {
     if (
       BigNumber(amountA).lte(0) ||
       BigNumber(amountB).lte(0) ||
-      isNaN(amountA) ||
-      isNaN(amountB)
+      isNaN(+amountA) ||
+      isNaN(+amountB)
     ) {
       return null;
     }
@@ -359,16 +367,15 @@ export default function ssLiquidityManage() {
         token1: pp.token1,
         amount0: amountA,
         amount1: amountB,
-        stable: sta,
+        stable: stable,
       },
     });
   };
 
-  const callQuoteRemoveLiquidity = (p, amount) => {
-    if (!pair) {
-      return null;
+  const callQuoteRemoveLiquidity = (p: Pair | null, amount: string) => {
+    if (!p) {
+      return;
     }
-
     stores.dispatcher.dispatch({
       type: ACTIONS.QUOTE_REMOVE_LIQUIDITY,
       content: {
@@ -380,19 +387,19 @@ export default function ssLiquidityManage() {
     });
   };
 
-  const handleChange = (event) => {
-    setToken(event.target.value);
-  };
-
-  const onSlippageChanged = (event) => {
-    if (event.target.value == "" || !isNaN(event.target.value)) {
+  const onSlippageChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.value == "" || !isNaN(+event.target.value)) {
       setSlippage(event.target.value);
     }
   };
 
-  const setAmountPercent = (input, percent) => {
+  const setAmountPercent = (input: string, percent: number) => {
     setAmount0Error(false);
     setAmount1Error(false);
+
+    if (!asset0?.balance || !asset1?.balance || !pair) {
+      return;
+    }
 
     if (input === "amount0") {
       let am = BigNumber(asset0.balance)
@@ -400,7 +407,7 @@ export default function ssLiquidityManage() {
         .div(100)
         .toFixed(asset0.decimals);
       setAmount0(am);
-      amount0Ref.current.focus();
+      if (!!amount0Ref.current) amount0Ref.current.focus();
       callQuoteAddLiquidity(am, amount1, 0, stable, pair, asset0, asset1);
     } else if (input === "amount1") {
       let am = BigNumber(asset1.balance)
@@ -408,14 +415,14 @@ export default function ssLiquidityManage() {
         .div(100)
         .toFixed(asset1.decimals);
       setAmount1(am);
-      amount1Ref.current.focus();
+      if (!!amount1Ref.current) amount1Ref.current.focus();
       callQuoteAddLiquidity(amount0, am, 1, stable, pair, asset0, asset1);
     } else if (input === "withdraw") {
       let am = "";
-      if (pair && pair.gauge) {
+      if (pair && pair.gauge && pair.gauge.balance) {
         am = BigNumber(pair.gauge.balance).times(percent).div(100).toFixed(18);
         setWithdrawAmount(am);
-      } else {
+      } else if (pair.balance) {
         am = BigNumber(pair.balance).times(percent).div(100).toFixed(18);
         setWithdrawAmount(am);
       }
@@ -440,9 +447,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset0.balance ||
-        isNaN(asset0.balance) ||
-        BigNumber(asset0.balance).lte(0)
+        !asset0?.balance ||
+        isNaN(+asset0?.balance) ||
+        BigNumber(asset0?.balance).lte(0)
       ) {
         setAmount0Error("Invalid balance");
         error = true;
@@ -460,9 +467,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset1.balance ||
-        isNaN(asset1.balance) ||
-        BigNumber(asset1.balance).lte(0)
+        !asset1?.balance ||
+        isNaN(+asset1?.balance) ||
+        BigNumber(asset1?.balance).lte(0)
       ) {
         setAmount1Error("Invalid balance");
         error = true;
@@ -506,7 +513,7 @@ export default function ssLiquidityManage() {
         type: ACTIONS.STAKE_LIQUIDITY,
         content: {
           pair: pair,
-          token: token,
+          token: "0",
           slippage: slippage && slippage != "" ? slippage : "2",
         },
       });
@@ -524,9 +531,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset0.balance ||
-        isNaN(asset0.balance) ||
-        BigNumber(asset0.balance).lte(0)
+        !asset0?.balance ||
+        isNaN(+asset0?.balance) ||
+        BigNumber(asset0?.balance).lte(0)
       ) {
         setAmount0Error("Invalid balance");
         error = true;
@@ -544,9 +551,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset1.balance ||
-        isNaN(asset1.balance) ||
-        BigNumber(asset1.balance).lte(0)
+        !asset1?.balance ||
+        isNaN(+asset1?.balance) ||
+        BigNumber(asset1?.balance).lte(0)
       ) {
         setAmount1Error("Invalid balance");
         error = true;
@@ -571,7 +578,7 @@ export default function ssLiquidityManage() {
           amount0: amount0,
           amount1: amount1,
           minLiquidity: quote ? quote : "0",
-          token: token,
+          token: "0",
           slippage: slippage && slippage != "" ? slippage : "2",
         },
       });
@@ -589,9 +596,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset0.balance ||
-        isNaN(asset0.balance) ||
-        BigNumber(asset0.balance).lte(0)
+        !asset0?.balance ||
+        isNaN(+asset0?.balance) ||
+        BigNumber(asset0?.balance).lte(0)
       ) {
         setAmount0Error("Invalid balance");
         error = true;
@@ -609,9 +616,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset1.balance ||
-        isNaN(asset1.balance) ||
-        BigNumber(asset1.balance).lte(0)
+        !asset1?.balance ||
+        isNaN(+asset1?.balance) ||
+        BigNumber(asset1?.balance).lte(0)
       ) {
         setAmount1Error("Invalid balance");
         error = true;
@@ -644,7 +651,7 @@ export default function ssLiquidityManage() {
           amount0: amount0,
           amount1: amount1,
           isStable: stable,
-          token: token,
+          token: "0",
           slippage: slippage && slippage != "" ? slippage : "2",
         },
       });
@@ -662,9 +669,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset0.balance ||
-        isNaN(asset0.balance) ||
-        BigNumber(asset0.balance).lte(0)
+        !asset0?.balance ||
+        isNaN(+asset0?.balance) ||
+        BigNumber(asset0?.balance).lte(0)
       ) {
         setAmount0Error("Invalid balance");
         error = true;
@@ -682,9 +689,9 @@ export default function ssLiquidityManage() {
       error = true;
     } else {
       if (
-        !asset1.balance ||
-        isNaN(asset1.balance) ||
-        BigNumber(asset1.balance).lte(0)
+        !asset1?.balance ||
+        isNaN(+asset1?.balance) ||
+        BigNumber(asset1?.balance).lte(0)
       ) {
         setAmount1Error("Invalid balance");
         error = true;
@@ -717,7 +724,7 @@ export default function ssLiquidityManage() {
           amount0: amount0,
           amount1: amount1,
           isStable: stable,
-          token: token,
+          token: "0",
           slippage: slippage && slippage != "" ? slippage : "2",
         },
       });
@@ -734,7 +741,12 @@ export default function ssLiquidityManage() {
       error = true;
     }
 
-    if (!error) {
+    if (!pair) {
+      setWithdrawAmountError("Pair is required");
+      error = true;
+    }
+
+    if (!error && pair) {
       setDepositLoading(true);
       stores.dispatcher.dispatch({
         type: ACTIONS.REMOVE_LIQUIDITY,
@@ -762,7 +774,7 @@ export default function ssLiquidityManage() {
         withdrawAsset &&
         withdrawAsset.gauge &&
         (!withdrawAsset.gauge.balance ||
-          isNaN(withdrawAsset.gauge.balance) ||
+          isNaN(+withdrawAsset.gauge.balance) ||
           BigNumber(withdrawAsset.gauge.balance).lte(0))
       ) {
         setWithdrawAmountError("Invalid balance");
@@ -772,6 +784,7 @@ export default function ssLiquidityManage() {
         error = true;
       } else if (
         withdrawAsset &&
+        withdrawAsset.gauge?.balance &&
         BigNumber(withdrawAmount).gt(withdrawAsset.gauge.balance)
       ) {
         setWithdrawAmountError(`Greater than your available balance`);
@@ -783,8 +796,12 @@ export default function ssLiquidityManage() {
       setWithdrawAmountError("From asset is required");
       error = true;
     }
+    if (!pair) {
+      setWithdrawAmountError("Pair is not selected");
+      error = true;
+    }
 
-    if (!error) {
+    if (!error && pair) {
       setDepositStakeLoading(true);
       stores.dispatcher.dispatch({
         type: ACTIONS.UNSTAKE_AND_REMOVE_LIQUIDITY,
@@ -803,6 +820,7 @@ export default function ssLiquidityManage() {
   };
 
   const onUnstake = () => {
+    if (!pair) return;
     setStakeLoading(true);
     stores.dispatcher.dispatch({
       type: ACTIONS.UNSTAKE_LIQUIDITY,
@@ -839,7 +857,7 @@ export default function ssLiquidityManage() {
     setActiveTab("withdraw");
   };
 
-  const amount0Changed = (event) => {
+  const amount0Changed = (event: React.ChangeEvent<HTMLInputElement>) => {
     setAmount0Error(false);
     setAmount0(event.target.value);
     callQuoteAddLiquidity(
@@ -853,7 +871,7 @@ export default function ssLiquidityManage() {
     );
   };
 
-  const amount1Changed = (event) => {
+  const amount1Changed = (event: React.ChangeEvent<HTMLInputElement>) => {
     setAmount1Error(false);
     setAmount1(event.target.value);
     callQuoteAddLiquidity(
@@ -867,19 +885,20 @@ export default function ssLiquidityManage() {
     );
   };
 
-  const amount0Focused = (event) => {
+  const amount0Focused = (_event: React.FocusEvent<HTMLInputElement>) => {
     setPriorityAsset(0);
     callQuoteAddLiquidity(amount0, amount1, 0, stable, pair, asset0, asset1);
   };
 
-  const amount1Focused = (event) => {
+  const amount1Focused = (_event: React.FocusEvent<HTMLInputElement>) => {
     setPriorityAsset(1);
     callQuoteAddLiquidity(amount0, amount1, 1, stable, pair, asset0, asset1);
   };
 
-  const onAssetSelect = async (type, value) => {
-    if (type === "amount0") {
+  const onAssetSelect = async (type: string, value: Pair | BaseAsset) => {
+    if (type === "amount0" && isBaseAsset(value)) {
       setAsset0(value);
+      if (!asset1?.address) return;
       const p = await stores.stableSwapStore.getPair(
         value.address,
         asset1.address,
@@ -895,8 +914,9 @@ export default function ssLiquidityManage() {
         value,
         asset1
       );
-    } else if (type === "amount1") {
+    } else if (type === "amount1" && isBaseAsset(value)) {
       setAsset1(value);
+      if (!asset0?.address) return;
       const p = await stores.stableSwapStore.getPair(
         asset0.address,
         value.address,
@@ -912,7 +932,7 @@ export default function ssLiquidityManage() {
         asset0,
         value
       );
-    } else if (type === "withdraw") {
+    } else if (type === "withdraw" && !isBaseAsset(value)) {
       setWithdrawAsset(value);
       const p = await stores.stableSwapStore.getPair(
         value.token0.address,
@@ -924,8 +944,9 @@ export default function ssLiquidityManage() {
     }
   };
 
-  const setStab = async (val) => {
+  const setStab = async (val: boolean) => {
     setStable(val);
+    if (!asset0?.address || !asset1?.address) return;
     const p = await stores.stableSwapStore.getPair(
       asset0.address,
       asset1.address,
@@ -943,74 +964,78 @@ export default function ssLiquidityManage() {
     );
   };
 
-  const withdrawAmountChanged = (event) => {
+  const withdrawAmountChanged = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
     setWithdrawAmountError(false);
     setWithdrawAmount(event.target.value);
     if (event.target.value === "") {
       setWithdrawAmount0("");
       setWithdrawAmount1("");
-    } else if (event.target.value !== "" && !isNaN(event.target.value)) {
+    } else if (event.target.value !== "" && !isNaN(+event.target.value)) {
       calcRemove(pair, event.target.value);
     }
   };
 
-  const calcRemove = (pear, amount) => {
-    if (!(amount && amount != "" && amount > 0)) {
+  const calcRemove = (pair: Pair | null, amount: string) => {
+    if (!(amount && amount != "" && parseFloat(amount) > 0)) {
       return;
     }
 
-    callQuoteRemoveLiquidity(pear, amount);
+    callQuoteRemoveLiquidity(pair, amount);
   };
 
-  const renderMediumInput = (type, value, logo, symbol) => {
+  const renderMediumInput = (
+    value: string,
+    logo: string | null | undefined,
+    symbol: string | undefined
+  ) => {
     return (
-      <div className={classes.textField}>
-        <div className={classes.mediumInputContainer}>
-          <div className={classes.mediumInputAssetSelect}>
-            <div className={classes.mediumdisplaySelectContainer}>
-              <div className={classes.assetSelectMenuItem}>
-                <div className={classes.mediumdisplayDualIconContainer}>
-                  {logo && (
-                    <img
-                      className={classes.mediumdisplayAssetIcon}
-                      alt=""
-                      src={logo}
-                      height="50px"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).onerror = null;
-                        (e.target as HTMLImageElement).src =
-                          "/tokens/unknown-logo.png";
-                      }}
-                    />
-                  )}
-                  {!logo && (
-                    <img
-                      className={classes.mediumdisplayAssetIcon}
-                      alt=""
-                      src={"/tokens/unknown-logo.png"}
-                      height="50px"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).onerror = null;
-                        (e.target as HTMLImageElement).src =
-                          "/tokens/unknown-logo.png";
-                      }}
-                    />
-                  )}
-                </div>
+      <div className="relative mb-1">
+        <div className="flex min-h-[50px] w-full flex-wrap items-center rounded-[10px] bg-primaryBg">
+          <div className="w-20">
+            <div className="h-20 p-3">
+              <div className="relative w-12">
+                {logo && (
+                  <img
+                    className="rounded-[50px] border border-[rgba(128,128,128,0.5)] bg-[#032523] p-1"
+                    alt=""
+                    src={logo}
+                    height="50px"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).onerror = null;
+                      (e.target as HTMLImageElement).src =
+                        "/tokens/unknown-logo.png";
+                    }}
+                  />
+                )}
+                {!logo && (
+                  <img
+                    className="rounded-[50px] border border-[rgba(128,128,128,0.5)] bg-[#032523] p-1"
+                    alt=""
+                    src={"/tokens/unknown-logo.png"}
+                    height="50px"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).onerror = null;
+                      (e.target as HTMLImageElement).src =
+                        "/tokens/unknown-logo.png";
+                    }}
+                  />
+                )}
               </div>
             </div>
           </div>
-          <div className={classes.mediumInputAmount}>
+          <div className="h-full flex-[1] p-1 pl-0">
             <TextField
               placeholder="0.00"
               fullWidth
               value={value}
               disabled={true}
               InputProps={{
-                className: classes.mediumInput,
+                style: { fontSize: "32px !important" },
               }}
             />
-            <Typography color="textSecondary" className={classes.smallestText}>
+            <Typography color="textSecondary" className="mb-1 -mt-1 text-xs">
               {symbol}
             </Typography>
           </div>
@@ -1020,24 +1045,25 @@ export default function ssLiquidityManage() {
   };
 
   const renderMassiveInput = (
-    type,
-    amountValue,
-    amountError,
-    amountChanged,
-    assetValue,
-    assetError,
-    assetOptions,
-    onAssetSelect,
-    onFocus,
-    inputRef
+    type: string,
+    amountValue: string,
+    amountError: string | false,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void,
+    assetValue: BaseAsset | Pair | null,
+    assetOptions: BaseAsset[] | Pair[],
+    onAssetSelect: (_type: string, _asset: BaseAsset) => void,
+    onFocus: React.FocusEventHandler<
+      HTMLTextAreaElement | HTMLInputElement
+    > | null,
+    inputRef: React.RefObject<HTMLInputElement> | null
   ) => {
     return (
-      <div className={classes.textField}>
-        <div className={classes.inputTitleContainer}>
-          <div className={classes.inputBalance}>
+      <div className="relative mb-1">
+        <div className="absolute top-2 flex w-full items-center justify-end">
+          <div className="z-[4] flex cursor-pointer justify-end pr-3 pb-[6px]">
             {type !== "withdraw" && (
               <Typography
-                className={classes.inputBalanceText}
+                className="text-xs font-thin text-secondaryGray"
                 noWrap
                 onClick={() => {
                   setAmountPercent(type, 100);
@@ -1049,9 +1075,9 @@ export default function ssLiquidityManage() {
                   : ""}
               </Typography>
             )}
-            {type === "withdraw" && (
+            {type === "withdraw" && !isBaseAsset(assetValue) && (
               <Typography
-                className={classes.inputBalanceText}
+                className="text-xs font-thin text-secondaryGray"
                 noWrap
                 onClick={() => {
                   setAmountPercent(type, 100);
@@ -1068,11 +1094,11 @@ export default function ssLiquidityManage() {
           </div>
         </div>
         <div
-          className={`${classes.massiveInputContainer} ${
-            (amountError || assetError) && classes.error
+          className={`flex w-full flex-wrap items-center rounded-[10px] bg-primaryBg ${
+            amountError && "border border-red-500"
           }`}
         >
-          <div className={classes.massiveInputAssetSelect}>
+          <div className="h-full min-h-[128px] w-32">
             <AssetSelect
               type={type}
               value={assetValue}
@@ -1081,22 +1107,24 @@ export default function ssLiquidityManage() {
               disabled={pairReadOnly}
             />
           </div>
-          <div className={classes.massiveInputAmount}>
+          <div className="h-full flex-[1] flex-grow-[0.98]">
             <TextField
               inputRef={inputRef}
               placeholder="0.00"
               fullWidth
-              error={amountError}
+              error={!!amountError}
               helperText={amountError}
               value={amountValue}
               onChange={amountChanged}
               disabled={createLoading}
-              onFocus={onFocus ? onFocus : null}
+              onFocus={onFocus ? onFocus : undefined}
               InputProps={{
-                className: classes.largeInput,
+                style: {
+                  fontSize: "46px !important",
+                },
               }}
             />
-            <Typography color="textSecondary" className={classes.smallerText}>
+            <Typography color="textSecondary" className="text-xs">
               {assetValue?.symbol}
             </Typography>
           </div>
@@ -1108,85 +1136,68 @@ export default function ssLiquidityManage() {
   const renderDepositInformation = () => {
     if (!pair) {
       return (
-        <div className={classes.depositInfoContainer}>
-          <Typography className={classes.depositInfoHeading}>
+        <div className="mt-3 flex w-full flex-wrap items-center rounded-[10px] p-3">
+          <Typography className="w-full border-b border-solid border-[rgba(126,153,176,0.2)] pb-[6px] text-sm font-bold text-cantoGreen">
             Starting Liquidity Info
           </Typography>
-          <div className={classes.createPriceInfos}>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+          <div className="grid w-full grid-cols-2 gap-3">
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {BigNumber(amount1).gt(0)
                   ? formatCurrency(BigNumber(amount0).div(amount1))
                   : "0.00"}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`${asset0?.symbol} per ${asset1?.symbol}`}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`${asset0?.symbol} per ${asset1?.symbol}`}</Typography>
             </div>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {BigNumber(amount0).gt(0)
                   ? formatCurrency(BigNumber(amount1).div(amount0))
                   : "0.00"}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`${asset1?.symbol} per ${asset0?.symbol}`}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`${asset1?.symbol} per ${asset0?.symbol}`}</Typography>
             </div>
           </div>
         </div>
       );
     } else {
       return (
-        <div className={classes.depositInfoContainer}>
-          <Typography className={classes.depositInfoHeading}>
+        <div className="mt-3 flex w-full flex-wrap items-center rounded-[10px] p-3">
+          <Typography className="w-full border-b border-solid border-[rgba(126,153,176,0.2)] pb-[6px] text-sm font-bold text-cantoGreen">
             Reserve Info
           </Typography>
-          <div className={classes.priceInfos}>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+          <div className="grid w-full grid-cols-3 gap-3">
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {formatCurrency(pair?.reserve0)}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`${pair?.token0?.symbol}`}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`${pair?.token0?.symbol}`}</Typography>
             </div>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {formatCurrency(pair?.reserve1)}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`${pair?.token1?.symbol}`}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`${pair?.token1?.symbol}`}</Typography>
             </div>
-            <div className={classes.priceInfo}>
-              {renderSmallInput(
-                "slippage",
-                slippage,
-                slippageError,
-                onSlippageChanged
-              )}
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              {renderSmallInput(slippage, slippageError, onSlippageChanged)}
             </div>
           </div>
-          <Typography className={classes.depositInfoHeading}>
+          <Typography className="w-full border-b border-solid border-[rgba(126,153,176,0.2)] pb-[6px] text-sm font-bold text-cantoGreen">
             Your Balances
           </Typography>
-          <div className={classes.createPriceInfos}>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+          <div className="grid w-full grid-cols-2 gap-3">
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {formatCurrency(pair?.balance)}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`Pooled ${pair?.symbol}`}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`Pooled ${pair?.symbol}`}</Typography>
             </div>
-            <div className={classes.priceInfo}>
-              <Typography className={classes.title}>
+            <div className="flex flex-col items-center justify-center py-6 px-0">
+              <Typography className="pb-[6px] text-sm font-bold">
                 {formatCurrency(pair?.gauge?.balance)}
               </Typography>
-              <Typography
-                className={classes.text}
-              >{`Staked ${pair?.symbol} `}</Typography>
+              <Typography className="text-xs text-secondaryGray">{`Staked ${pair?.symbol} `}</Typography>
             </div>
           </div>
         </div>
@@ -1196,77 +1207,68 @@ export default function ssLiquidityManage() {
 
   const renderWithdrawInformation = () => {
     return (
-      <div className={classes.withdrawInfoContainer}>
-        <Typography className={classes.depositInfoHeading}>
+      <div className="mt-2 flex w-full flex-wrap items-center rounded-[10px] p-3">
+        <Typography className="w-full border-b border-solid border-[rgba(126,153,176,0.2)] pb-[6px] text-sm font-bold text-cantoGreen">
           Reserve Info
         </Typography>
-        <div className={classes.priceInfos}>
-          <div className={classes.priceInfo}>
-            <Typography className={classes.title}>
+        <div className="grid w-full grid-cols-3 gap-3">
+          <div className="flex flex-col items-center justify-center py-6 px-0">
+            <Typography className="pb-[6px] text-sm font-bold">
               {formatCurrency(pair?.reserve0)}
             </Typography>
-            <Typography
-              className={classes.text}
-            >{`${pair?.token0?.symbol}`}</Typography>
+            <Typography className="text-xs text-secondaryGray">{`${pair?.token0?.symbol}`}</Typography>
           </div>
-          <div className={classes.priceInfo}>
-            <Typography className={classes.title}>
+          <div className="flex flex-col items-center justify-center py-6 px-0">
+            <Typography className="pb-[6px] text-sm font-bold">
               {formatCurrency(pair?.reserve1)}
             </Typography>
-            <Typography
-              className={classes.text}
-            >{`${pair?.token1?.symbol}`}</Typography>
+            <Typography className="text-xs text-secondaryGray">{`${pair?.token1?.symbol}`}</Typography>
           </div>
-          <div className={classes.priceInfo}>
-            {renderSmallInput(
-              "slippage",
-              slippage,
-              slippageError,
-              onSlippageChanged
-            )}
+          <div className="flex flex-col items-center justify-center py-6 px-0">
+            {renderSmallInput(slippage, slippageError, onSlippageChanged)}
           </div>
         </div>
-        <Typography className={classes.depositInfoHeading}>
+        <Typography className="w-full border-b border-solid border-[rgba(126,153,176,0.2)] pb-[6px] text-sm font-bold text-cantoGreen">
           Your Balances
         </Typography>
-        <div className={classes.createPriceInfos}>
-          <div className={classes.priceInfo}>
-            <Typography className={classes.title}>
+        <div className="grid w-full grid-cols-2 gap-3">
+          <div className="flex flex-col items-center justify-center py-6 px-0">
+            <Typography className="pb-[6px] text-sm font-bold">
               {formatCurrency(pair?.balance)}
             </Typography>
-            <Typography
-              className={classes.text}
-            >{`Pooled ${pair?.symbol}`}</Typography>
+            <Typography className="text-xs text-secondaryGray">{`Pooled ${pair?.symbol}`}</Typography>
           </div>
-          <div className={classes.priceInfo}>
-            <Typography className={classes.title}>
+          <div className="flex flex-col items-center justify-center py-6 px-0">
+            <Typography className="pb-[6px] text-sm font-bold">
               {formatCurrency(pair?.gauge?.balance)}
             </Typography>
-            <Typography
-              className={classes.text}
-            >{`Staked ${pair?.symbol} `}</Typography>
+            <Typography className="text-xs text-secondaryGray">{`Staked ${pair?.symbol} `}</Typography>
           </div>
         </div>
-        <div className={classes.disclaimerContainer}>
-          <Typography className={classes.disclaimer}>
-            "We are very sad to see you are no longer going with the FLOW"
+        <div className="flex min-h-[100px] items-center justify-center">
+          <Typography className="border border-cantoGreen bg-[#0e110c] p-6 text-sm font-extralight">
+            We are very sad to see you are no longer going with the FLOW
           </Typography>
         </div>
       </div>
     );
   };
 
-  const renderSmallInput = (type, amountValue, amountError, amountChanged) => {
+  const renderSmallInput = (
+    amountValue: string,
+    amountError: boolean,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void
+  ) => {
     return (
-      <div className={classes.textField}>
-        <div className={classes.inputTitleContainerSlippage}>
-          <div className={classes.inputBalanceSlippage}>
-            <Typography className={classes.inputBalanceTextSlippage} noWrap>
+      <div className="relative mb-1">
+        <div className="absolute top-1">
+          <div className="pl-3">
+            <Typography className="text-xs font-thin text-secondaryGray" noWrap>
               Slippage
             </Typography>
           </div>
         </div>
-        <div className={classes.smallInputContainer}>
+        <div className="flex min-h-[50px] w-full max-w-[112px] flex-wrap items-center rounded-[10px] bg-primaryBg">
           <TextField
             placeholder="0.00"
             fullWidth
@@ -1281,7 +1283,6 @@ export default function ssLiquidityManage() {
               createLoading
             }
             InputProps={{
-              className: classes.smallInput,
               endAdornment: <InputAdornment position="end">%</InputAdornment>,
             }}
           />
@@ -1290,76 +1291,33 @@ export default function ssLiquidityManage() {
     );
   };
 
-  const renderMediumInputToggle = (type, value) => {
+  const renderMediumInputToggle = () => {
     return (
-      <div className={classes.textField}>
-        <div className={classes.mediumInputContainer}>
-          <div className={classes.toggles}>
+      <div className="relative mb-1">
+        <div className="flex min-h-[50px] w-full flex-wrap items-center rounded-[10px] bg-primaryBg">
+          <div className="grid w-full grid-cols-[1fr_1fr] p-1">
             <div
-              className={`${classes.toggleOption} ${stable && classes.active}`}
+              className={`cursor-pointer rounded-lg p-5 text-secondaryGray hover:bg-[rgb(23,52,72)] hover:text-cantoGreen ${
+                stable &&
+                "border border-cantoGreen bg-[rgb(23,52,72)] text-cantoGreen"
+              }`}
               onClick={() => {
                 setStab(true);
               }}
             >
-              <Typography className={classes.toggleOptionText}>
-                Stable
-              </Typography>
+              <Typography className="text-center">Stable</Typography>
             </div>
             <div
-              className={`${classes.toggleOption} ${!stable && classes.active}`}
+              className={`cursor-pointer rounded-lg p-5 text-secondaryGray hover:bg-[rgb(23,52,72)] hover:text-cantoGreen ${
+                !stable &&
+                "border border-cantoGreen bg-[rgb(23,52,72)] text-cantoGreen"
+              }`}
               onClick={() => {
                 setStab(false);
               }}
             >
-              <Typography className={classes.toggleOptionText}>
-                Volatile
-              </Typography>
+              <Typography className="text-center">Volatile</Typography>
             </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderTokenSelect = () => {
-    return (
-      <div className={classes.textField}>
-        <div className={classes.mediumInputContainer}>
-          <div className={classes.mediumInputAmount}>
-            <Select
-              fullWidth
-              value={token}
-              onChange={handleChange}
-              // @ts-expect-error This is because of how material-ui works
-              InputProps={{
-                className: classes.mediumInput,
-              }}
-            >
-              {vestNFTs &&
-                vestNFTs.map((option) => {
-                  return (
-                    <MenuItem key={option.id} value={option}>
-                      <div className={classes.menuOption}>
-                        <Typography>Token #{option.id}</Typography>
-                        <div>
-                          <Typography
-                            align="right"
-                            className={classes.smallerText}
-                          >
-                            {formatCurrency(option.lockValue)}
-                          </Typography>
-                          <Typography
-                            color="textSecondary"
-                            className={classes.smallerText}
-                          >
-                            {veToken?.symbol}
-                          </Typography>
-                        </div>
-                      </div>
-                    </MenuItem>
-                  );
-                })}
-            </Select>
           </div>
         </div>
       </div>
@@ -1371,58 +1329,51 @@ export default function ssLiquidityManage() {
   };
 
   return (
-    <div className={classes.retain}>
-      <Paper elevation={0} className={classes.container}>
-        <div className={classes.toggleButtons}>
+    <div className="relative">
+      <Paper
+        elevation={0}
+        className="m-auto mt-0 flex w-[calc(100%-60px)] max-w-[485px] flex-col items-start bg-transparent shadow-glow"
+      >
+        <div className="flex w-full flex-col rounded-t-lg rounded-r-lg rounded-b-none rounded-l-none text-cantoGreen">
           <Grid container spacing={0}>
             <Grid item lg={6} md={6} sm={6} xs={6}>
               <Paper
-                className={`${
+                className={`cursor-pointer rounded-t-lg rounded-r-none rounded-b-none rounded-l-none border bg-transparent font-medium text-secondaryGray outline-0 ${
                   activeTab === "deposit"
-                    ? classes.buttonActive
-                    : classes.button
-                } ${classes.topLeftButton}`}
+                    ? " border-cantoGreen text-white"
+                    : "border-transparent hover:bg-[hsla(0,0%,100%,.04)]"
+                } flex items-center justify-center py-6`}
                 onClick={toggleDeposit}
               >
                 <Typography variant="h5">Deposit</Typography>
-                <div
-                  className={`${
-                    activeTab === "deposit" ? classes.activeIcon : ""
-                  }`}
-                ></div>
               </Paper>
             </Grid>
             <Grid item lg={6} md={6} sm={6} xs={6}>
               <Paper
-                className={`${
+                className={`cursor-pointer rounded-t-lg rounded-r-none rounded-b-none rounded-l-none border bg-transparent font-medium text-secondaryGray outline-0 ${
                   activeTab === "withdraw"
-                    ? classes.buttonActive
-                    : classes.button
-                }  ${classes.bottomLeftButton}`}
+                    ? " border-cantoGreen text-white"
+                    : "border-transparent hover:bg-[hsla(0,0%,100%,.04)]"
+                } flex items-center justify-center py-6`}
                 onClick={toggleWithdraw}
               >
                 <Typography variant="h5">Withdraw</Typography>
-                <div
-                  className={`${
-                    activeTab === "withdraw" ? classes.activeIcon : ""
-                  }`}
-                ></div>
               </Paper>
             </Grid>
           </Grid>
         </div>
-        <div className={classes.titleSection}>
+        <div className="relative mt-5 mr-6 mb-0 ml-6 flex min-h-[60px] w-[calc(100%-50px)] items-center justify-center rounded-[10px] border border-deepBlue bg-none">
           <Tooltip title="Back to Liquidity" placement="top">
-            <IconButton className={classes.backButton} onClick={onBack}>
-              <ArrowBack className={classes.backIcon} />
+            <IconButton className="absolute left-1" onClick={onBack}>
+              <ArrowBack className="text-cantoGreen" />
             </IconButton>
           </Tooltip>
-          <Typography className={classes.titleText}>
+          <Typography className="text-lg font-bold">
             Manage Liquidity Pair
           </Typography>
         </div>
-        <div className={classes.reAddPadding}>
-          <div className={classes.inputsContainer}>
+        <div className="w-full py-6 px-0">
+          <div className="py-0 px-6">
             {activeTab === "deposit" && (
               <>
                 {renderMassiveInput(
@@ -1431,15 +1382,14 @@ export default function ssLiquidityManage() {
                   amount0Error,
                   amount0Changed,
                   asset0,
-                  null,
                   assetOptions,
                   onAssetSelect,
                   amount0Focused,
                   amount0Ref
                 )}
-                <div className={classes.swapIconContainer}>
-                  <div className={classes.swapIconSubContainer}>
-                    <Add className={classes.swapIcon} />
+                <div className="z-[9] flex h-0 w-full items-center justify-center">
+                  <div className="z-[1] h-9 rounded-[9px] bg-[#161b2c]">
+                    <Add className="m-1 cursor-pointer rounded-md bg-[rgb(33,43,72)] p-[6px] text-3xl" />
                   </div>
                 </div>
                 {renderMassiveInput(
@@ -1448,14 +1398,12 @@ export default function ssLiquidityManage() {
                   amount1Error,
                   amount1Changed,
                   asset1,
-                  null,
                   assetOptions,
                   onAssetSelect,
                   amount1Focused,
                   amount1Ref
                 )}
-                {renderMediumInputToggle("stable", stable)}
-                {renderTokenSelect()}
+                {renderMediumInputToggle()}
                 {renderDepositInformation()}
               </>
             )}
@@ -1467,26 +1415,23 @@ export default function ssLiquidityManage() {
                   withdrawAmountError,
                   withdrawAmountChanged,
                   withdrawAsset,
-                  null,
                   withdrawAassetOptions,
                   onAssetSelect,
                   null,
                   null
                 )}
-                <div className={classes.swapIconContainer}>
-                  <div className={classes.swapIconSubContainer}>
-                    <ArrowDownward className={classes.swapIcon} />
+                <div className="z-[9] flex h-0 w-full items-center justify-center">
+                  <div className="z-[1] h-9 rounded-[9px] bg-[#161b2c]">
+                    <ArrowDownward className="m-1 cursor-pointer rounded-md bg-[rgb(33,43,72)] p-[6px] text-3xl" />
                   </div>
                 </div>
-                <div className={classes.receiveAssets}>
+                <div className="grid grid-cols-[repeat(2,1fr)] gap-1">
                   {renderMediumInput(
-                    "withdrawAmount0",
                     withdrawAmount0,
                     pair?.token0?.logoURI,
                     pair?.token0?.symbol
                   )}
                   {renderMediumInput(
-                    "withdrawAmount1",
                     withdrawAmount1,
                     pair?.token1?.logoURI,
                     pair?.token1?.symbol
@@ -1496,7 +1441,7 @@ export default function ssLiquidityManage() {
               </>
             )}
           </div>
-          <div className={classes.advancedToggleContainer}>
+          <div className="flex justify-end py-0 px-8">
             <FormControlLabel
               control={
                 <Switch
@@ -1506,13 +1451,13 @@ export default function ssLiquidityManage() {
                   color={"primary"}
                 />
               }
-              className={classes.some}
+              className="[&>span]:text-[13px]"
               label="Advanced"
               labelPlacement="start"
             />
           </div>
           {activeTab === "deposit" && (
-            <div className={classes.actionsContainer}>
+            <div className="mt-3 grid h-full w-full grid-cols-[1fr] gap-3 py-0 px-6">
               {pair === null &&
                 asset0 &&
                 asset0.isWhitelisted === true &&
@@ -1524,20 +1469,20 @@ export default function ssLiquidityManage() {
                       size="large"
                       className={
                         createLoading || depositLoading
-                          ? classes.multiApprovalButton
-                          : classes.buttonOverride
+                          ? "min-w-[auto]"
+                          : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                       }
                       color="primary"
                       disabled={createLoading || depositLoading}
                       onClick={onCreateAndStake}
                     >
-                      <Typography className={classes.actionButtonText}>
+                      <Typography className="font-bold capitalize">
                         {createLoading ? `Creating` : `Create Pair & Stake`}
                       </Typography>
                       {createLoading && (
                         <CircularProgress
                           size={10}
-                          className={classes.loadingCircle}
+                          className="ml-2 fill-white"
                         />
                       )}
                     </Button>
@@ -1548,14 +1493,14 @@ export default function ssLiquidityManage() {
                           size="large"
                           className={
                             createLoading || depositLoading
-                              ? classes.multiApprovalButton
-                              : classes.buttonOverride
+                              ? "min-w-[auto]"
+                              : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                           }
                           color="primary"
                           disabled={createLoading || depositLoading}
                           onClick={onCreateAndDeposit}
                         >
-                          <Typography className={classes.actionButtonText}>
+                          <Typography className="font-bold capitalize">
                             {depositLoading
                               ? `Depositing`
                               : `Create Pair & Deposit`}
@@ -1563,7 +1508,7 @@ export default function ssLiquidityManage() {
                           {depositLoading && (
                             <CircularProgress
                               size={10}
-                              className={classes.loadingCircle}
+                              className="ml-2 fill-white"
                             />
                           )}
                         </Button>
@@ -1584,14 +1529,14 @@ export default function ssLiquidityManage() {
                       size="large"
                       className={
                         createLoading || depositLoading
-                          ? classes.multiApprovalButton
-                          : classes.buttonOverride
+                          ? "min-w-[auto]"
+                          : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                       }
                       color="primary"
                       disabled={createLoading || depositLoading}
                       onClick={onCreateAndDeposit}
                     >
-                      <Typography className={classes.actionButtonText}>
+                      <Typography className="font-bold capitalize">
                         {depositLoading
                           ? `Depositing`
                           : `Create Pair & Deposit`}
@@ -1599,7 +1544,7 @@ export default function ssLiquidityManage() {
                       {depositLoading && (
                         <CircularProgress
                           size={10}
-                          className={classes.loadingCircle}
+                          className="ml-2 fill-white"
                         />
                       )}
                     </Button>
@@ -1617,8 +1562,8 @@ export default function ssLiquidityManage() {
                         depositLoading ||
                         stakeLoading ||
                         depositStakeLoading
-                          ? classes.multiApprovalButton
-                          : classes.buttonOverride
+                          ? "min-w-[auto]"
+                          : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                       }
                       color="primary"
                       disabled={
@@ -1629,48 +1574,51 @@ export default function ssLiquidityManage() {
                       }
                       onClick={onDeposit}
                     >
-                      <Typography className={classes.actionButtonText}>
+                      <Typography className="font-bold capitalize">
                         {depositLoading ? `Depositing` : `Deposit`}
                       </Typography>
                       {depositLoading && (
                         <CircularProgress
                           size={10}
-                          className={classes.loadingCircle}
+                          className="ml-2 fill-white"
                         />
                       )}
                     </Button>
-                    {pair.token0.isWhitelisted && pair.token1.isWhitelisted && (
-                      <Button
-                        variant="contained"
-                        size="large"
-                        className={
-                          createLoading ||
-                          depositLoading ||
-                          stakeLoading ||
-                          depositStakeLoading
-                            ? classes.multiApprovalButton
-                            : classes.buttonOverride
-                        }
-                        color="primary"
-                        disabled={
-                          createLoading ||
-                          depositLoading ||
-                          stakeLoading ||
-                          depositStakeLoading
-                        }
-                        onClick={onCreateGauge}
-                      >
-                        <Typography className={classes.actionButtonText}>
-                          {createLoading ? `Creating` : `Create Gauge`}
-                        </Typography>
-                        {createLoading && (
-                          <CircularProgress
-                            size={10}
-                            className={classes.loadingCircle}
-                          />
-                        )}
-                      </Button>
-                    )}
+                    {isBaseAsset(pair.token0) &&
+                      isBaseAsset(pair.token1) &&
+                      pair.token0.isWhitelisted &&
+                      pair.token1.isWhitelisted && (
+                        <Button
+                          variant="contained"
+                          size="large"
+                          className={
+                            createLoading ||
+                            depositLoading ||
+                            stakeLoading ||
+                            depositStakeLoading
+                              ? "min-w-[auto]"
+                              : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
+                          }
+                          color="primary"
+                          disabled={
+                            createLoading ||
+                            depositLoading ||
+                            stakeLoading ||
+                            depositStakeLoading
+                          }
+                          onClick={onCreateGauge}
+                        >
+                          <Typography className="font-bold capitalize">
+                            {createLoading ? `Creating` : `Create Gauge`}
+                          </Typography>
+                          {createLoading && (
+                            <CircularProgress
+                              size={10}
+                              className="ml-2 fill-white"
+                            />
+                          )}
+                        </Button>
+                      )}
                   </>
                 )
               }
@@ -1686,8 +1634,8 @@ export default function ssLiquidityManage() {
                         depositLoading ||
                         stakeLoading ||
                         depositStakeLoading
-                          ? classes.multiApprovalButton
-                          : classes.buttonOverride
+                          ? "min-w-[auto]"
+                          : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                       }
                       color="primary"
                       disabled={
@@ -1698,13 +1646,13 @@ export default function ssLiquidityManage() {
                       }
                       onClick={onDepositAndStake}
                     >
-                      <Typography className={classes.actionButtonText}>
+                      <Typography className="font-bold capitalize">
                         {depositStakeLoading ? `Depositing` : `Deposit & Stake`}
                       </Typography>
                       {depositStakeLoading && (
                         <CircularProgress
                           size={10}
-                          className={classes.loadingCircle}
+                          className="ml-2 fill-white"
                         />
                       )}
                     </Button>
@@ -1718,8 +1666,8 @@ export default function ssLiquidityManage() {
                             depositLoading ||
                             stakeLoading ||
                             depositStakeLoading
-                              ? classes.multiApprovalButton
-                              : classes.buttonOverride
+                              ? "min-w-[auto]"
+                              : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                           }
                           color="primary"
                           disabled={
@@ -1730,13 +1678,13 @@ export default function ssLiquidityManage() {
                           }
                           onClick={onDeposit}
                         >
-                          <Typography className={classes.actionButtonText}>
+                          <Typography className="font-bold capitalize">
                             {depositLoading ? `Depositing` : `Deposit LP`}
                           </Typography>
                           {depositLoading && (
                             <CircularProgress
                               size={10}
-                              className={classes.loadingCircle}
+                              className="ml-2 fill-white"
                             />
                           )}
                         </Button>
@@ -1744,24 +1692,24 @@ export default function ssLiquidityManage() {
                           variant="contained"
                           size="large"
                           className={
-                            BigNumber(pair.balance).eq(0) ||
+                            (pair.balance && BigNumber(pair.balance).eq(0)) ||
                             depositLoading ||
                             stakeLoading ||
                             depositStakeLoading
-                              ? classes.multiApprovalButton
-                              : classes.buttonOverride
+                              ? "min-w-[auto]"
+                              : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                           }
                           color="primary"
                           disabled={
-                            BigNumber(pair.balance).eq(0) ||
+                            (pair.balance && BigNumber(pair.balance).eq(0)) ||
                             depositLoading ||
                             stakeLoading ||
                             depositStakeLoading
                           }
                           onClick={onStake}
                         >
-                          <Typography className={classes.actionButtonText}>
-                            {BigNumber(pair.balance).gt(0)
+                          <Typography className="font-bold capitalize">
+                            {pair.balance && BigNumber(pair.balance).gt(0)
                               ? stakeLoading
                                 ? `Staking`
                                 : `Stake ${formatCurrency(pair.balance)} LP`
@@ -1770,7 +1718,7 @@ export default function ssLiquidityManage() {
                           {stakeLoading && (
                             <CircularProgress
                               size={10}
-                              className={classes.loadingCircle}
+                              className="ml-2 fill-white"
                             />
                           )}
                         </Button>
@@ -1782,7 +1730,7 @@ export default function ssLiquidityManage() {
             </div>
           )}
           {activeTab === "withdraw" && (
-            <div className={classes.actionsContainer}>
+            <div className="mt-3 grid h-full w-full grid-cols-[1fr] gap-3 py-0 px-6">
               {!(pair && pair.gauge && pair.gauge.address) && (
                 <Button
                   variant="contained"
@@ -1790,20 +1738,17 @@ export default function ssLiquidityManage() {
                   color="primary"
                   className={
                     depositLoading || withdrawAmount === ""
-                      ? classes.multiApprovalButton
-                      : classes.buttonOverride
+                      ? "min-w-[auto]"
+                      : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                   }
                   disabled={depositLoading || withdrawAmount === ""}
                   onClick={onWithdraw}
                 >
-                  <Typography className={classes.actionButtonText}>
+                  <Typography className="font-bold capitalize">
                     {depositLoading ? `Withdrawing` : `Withdraw`}
                   </Typography>
                   {depositLoading && (
-                    <CircularProgress
-                      size={10}
-                      className={classes.loadingCircle}
-                    />
+                    <CircularProgress size={10} className="ml-2 fill-white" />
                   )}
                 </Button>
               )}
@@ -1818,8 +1763,8 @@ export default function ssLiquidityManage() {
                       stakeLoading ||
                       depositStakeLoading ||
                       withdrawAmount === ""
-                        ? classes.multiApprovalButton
-                        : classes.buttonOverride
+                        ? "min-w-[auto]"
+                        : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                     }
                     disabled={
                       depositLoading ||
@@ -1829,16 +1774,13 @@ export default function ssLiquidityManage() {
                     }
                     onClick={onUnstakeAndWithdraw}
                   >
-                    <Typography className={classes.actionButtonText}>
+                    <Typography className="font-bold capitalize">
                       {depositStakeLoading
                         ? `Withdrawing`
                         : `Unstake and Withdraw`}
                     </Typography>
                     {depositStakeLoading && (
-                      <CircularProgress
-                        size={10}
-                        className={classes.loadingCircle}
-                      />
+                      <CircularProgress size={10} className="ml-2 fill-white" />
                     )}
                   </Button>
                   {advanced && (
@@ -1851,8 +1793,8 @@ export default function ssLiquidityManage() {
                           depositLoading ||
                           stakeLoading ||
                           depositStakeLoading
-                            ? classes.multiApprovalButton
-                            : classes.buttonOverride
+                            ? "min-w-[auto]"
+                            : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                         }
                         color="primary"
                         disabled={
@@ -1863,13 +1805,13 @@ export default function ssLiquidityManage() {
                         }
                         onClick={onUnstake}
                       >
-                        <Typography className={classes.actionButtonText}>
+                        <Typography className="font-bold capitalize">
                           {stakeLoading ? `Unstaking` : `Unstake LP`}
                         </Typography>
                         {stakeLoading && (
                           <CircularProgress
                             size={10}
-                            className={classes.loadingCircle}
+                            className="ml-2 fill-white"
                           />
                         )}
                       </Button>
@@ -1877,24 +1819,24 @@ export default function ssLiquidityManage() {
                         variant="contained"
                         size="large"
                         className={
-                          BigNumber(pair.balance).eq(0) ||
+                          (pair.balance && BigNumber(pair.balance).eq(0)) ||
                           depositLoading ||
                           stakeLoading ||
                           depositStakeLoading
-                            ? classes.multiApprovalButton
-                            : classes.buttonOverride
+                            ? "min-w-[auto]"
+                            : "bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
                         }
                         color="primary"
                         disabled={
-                          BigNumber(pair.balance).eq(0) ||
+                          (pair.balance && BigNumber(pair.balance).eq(0)) ||
                           depositLoading ||
                           stakeLoading ||
                           depositStakeLoading
                         }
                         onClick={onWithdraw}
                       >
-                        <Typography className={classes.actionButtonText}>
-                          {BigNumber(pair.balance).gt(0)
+                        <Typography className="font-bold capitalize">
+                          {pair.balance && BigNumber(pair.balance).gt(0)
                             ? depositLoading
                               ? `Withdrawing`
                               : `Withdraw ${formatCurrency(pair.balance)} LP`
@@ -1903,7 +1845,7 @@ export default function ssLiquidityManage() {
                         {depositLoading && (
                           <CircularProgress
                             size={10}
-                            className={classes.loadingCircle}
+                            className="ml-2 fill-white"
                           />
                         )}
                       </Button>
@@ -1919,10 +1861,24 @@ export default function ssLiquidityManage() {
   );
 }
 
-function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
+function AssetSelect({
+  type,
+  value,
+  assetOptions,
+  onSelect,
+  disabled,
+}: {
+  type: string;
+  value: BaseAsset | Pair | null;
+  assetOptions: BaseAsset[] | Pair[];
+  onSelect: (_type: string, _asset: BaseAsset) => void;
+  disabled: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [filteredAssetOptions, setFilteredAssetOptions] = useState([]);
+  const [filteredAssetOptions, setFilteredAssetOptions] = useState<BaseAsset[]>(
+    []
+  );
 
   const [manageLocal, setManageLocal] = useState(false);
 
@@ -1937,7 +1893,7 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
   // TODO this useEffect needs to be refactored.
   useEffect(() => {
     const filter = async () => {
-      let ao = assetOptions
+      let ao = (assetOptions as BaseAsset[])
         .filter((asset) => {
           if (search && search !== "") {
             return (
@@ -1950,8 +1906,10 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
           }
         })
         .sort((a, b) => {
-          if (BigNumber(a.balance).lt(b.balance)) return 1;
-          if (BigNumber(a.balance).gt(b.balance)) return -1;
+          if (a.balance && b.balance && BigNumber(a.balance).lt(b.balance))
+            return 1;
+          if (a.balance && b.balance && BigNumber(a.balance).gt(b.balance))
+            return -1;
           if (a.symbol < b.symbol) return -1;
           if (a.symbol > b.symbol) return 1;
           return 0;
@@ -1960,23 +1918,24 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
       setFilteredAssetOptions(ao);
 
       //no options in our default list and its an address we search for the address
-      if (ao.length === 0 && search && search.length === 42) {
-        const baseAsset = await stores.stableSwapStore.getBaseAsset(
-          search,
-          true,
-          true
-        );
+      if (
+        ao.length === 0 &&
+        search &&
+        search.length === 42 &&
+        isAddress(search)
+      ) {
+        await stores.stableSwapStore.getBaseAsset(search, true, true);
       }
     };
     filter();
     return () => {};
   }, [assetOptions, search]);
 
-  const onSearchChanged = async (event) => {
+  const onSearchChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSearch(event.target.value);
   };
 
-  const onLocalSelect = (type, asset) => {
+  const onLocalSelect = (type: string, asset: BaseAsset) => {
     setSearch("");
     setManageLocal(false);
     setOpen(false);
@@ -1993,41 +1952,39 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
     setManageLocal(!manageLocal);
   };
 
-  const deleteOption = (token) => {
+  const deleteOption = (token: BaseAsset) => {
     stores.stableSwapStore.removeBaseAsset(token);
   };
 
-  const viewOption = (token) => {
+  const viewOption = (token: BaseAsset) => {
     window.open(`${ETHERSCAN_URL}token/${token.address}`, "_blank");
   };
 
-  const renderManageOption = (type, asset, idx) => {
+  const renderManageOption = (asset: BaseAsset, idx: number) => {
     return (
       <MenuItem
         key={asset.address + "_" + idx}
-        className={classes.assetSelectMenu}
+        className="flex items-center justify-between px-0"
       >
-        <div className={classes.assetSelectMenuItem}>
-          <div className={classes.displayDualIconContainerSmall}>
-            <img
-              className={classes.displayAssetIconSmall}
-              alt=""
-              src={asset ? `${asset.logoURI}` : ""}
-              height="60px"
-              onError={(e) => {
-                (e.target as HTMLImageElement).onerror = null;
-                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
-              }}
-            />
-          </div>
+        <div className="relative mr-3 w-14">
+          <img
+            className="h-full w-full rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[rgb(33,43,72)] p-[6px]"
+            alt=""
+            src={asset ? `${asset.logoURI}` : ""}
+            height="60px"
+            onError={(e) => {
+              (e.target as HTMLImageElement).onerror = null;
+              (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+            }}
+          />
         </div>
-        <div className={classes.assetSelectIconName}>
+        <div>
           <Typography variant="h5">{asset ? asset.symbol : ""}</Typography>
           <Typography variant="subtitle1" color="textSecondary">
             {asset ? asset.name : ""}
           </Typography>
         </div>
-        <div className={classes.assetSelectActions}>
+        <div className="flex flex-[1] justify-end">
           <IconButton
             onClick={() => {
               deleteOption(asset);
@@ -2047,36 +2004,35 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
     );
   };
 
-  const renderAssetOption = (type, asset, idx) => {
+  const renderAssetOption = (type: string, asset: BaseAsset, idx: number) => {
     return (
       <MenuItem
         key={asset.address + "_" + idx}
-        className={classes.assetSelectMenu}
+        className="flex items-center justify-between px-0"
         onClick={() => {
           onLocalSelect(type, asset);
         }}
       >
-        <div className={classes.assetSelectMenuItem}>
-          <div className={classes.displayDualIconContainerSmall}>
-            <img
-              className={classes.displayAssetIconSmall}
-              alt=""
-              src={asset ? `${asset.logoURI}` : ""}
-              height="60px"
-              onError={(e) => {
-                (e.target as HTMLImageElement).onerror = null;
-                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
-              }}
-            />
-          </div>
+        <div className="relative mr-3 w-14">
+          <img
+            className="h-full w-full rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[rgb(33,43,72)] p-[6px]"
+            alt=""
+            src={asset ? `${asset.logoURI}` : ""}
+            height="60px"
+            onError={(e) => {
+              (e.target as HTMLImageElement).onerror = null;
+              (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+            }}
+          />
         </div>
-        <div className={classes.assetSelectIconName}>
+
+        <div>
           <Typography variant="h5">{asset ? asset.symbol : ""}</Typography>
           <Typography variant="subtitle1" color="textSecondary">
             {asset ? asset.name : ""}
           </Typography>
         </div>
-        <div className={classes.assetSelectBalance}>
+        <div className="ml-12 flex flex-[1] flex-col items-end">
           <Typography variant="h5">
             {asset && asset.balance ? formatCurrency(asset.balance) : "0.00"}
           </Typography>
@@ -2091,37 +2047,36 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
   const renderManageLocal = () => {
     return (
       <>
-        <div className={classes.searchContainer}>
-          <div className={classes.searchInline}>
-            <TextField
-              autoFocus
-              variant="outlined"
-              fullWidth
-              placeholder="CANTO, MIM, 0x..."
-              value={search}
-              onChange={onSearchChanged}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <Search />
-                  </InputAdornment>
-                ),
-              }}
-            />
-          </div>
-          <div className={classes.assetSearchResults}>
+        <div className="h-[600px] overflow-y-scroll p-6">
+          <TextField
+            autoFocus
+            variant="outlined"
+            fullWidth
+            placeholder="CANTO, NOTE, 0x..."
+            value={search}
+            onChange={onSearchChanged}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search />
+                </InputAdornment>
+              ),
+            }}
+          />
+
+          <div className="mt-3 flex w-full min-w-[390px] flex-col">
             {filteredAssetOptions
               ? filteredAssetOptions
                   .filter((option) => {
                     return option.local === true;
                   })
                   .map((asset, idx) => {
-                    return renderManageOption(type, asset, idx);
+                    return renderManageOption(asset, idx);
                   })
               : []}
           </div>
         </div>
-        <div className={classes.manageLocalContainer}>
+        <div className="flex w-full items-center justify-center p-[6px]">
           <Button onClick={toggleLocal}>Back to Assets</Button>
         </div>
       </>
@@ -2131,30 +2086,39 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
   const renderOptions = () => {
     return (
       <>
-        <div className={classes.searchContainer}>
-          <div className={classes.searchInline}>
-            <TextField
-              autoFocus
-              variant="outlined"
-              fullWidth
-              placeholder="CANTO, MIM, 0x..."
-              value={search}
-              onChange={onSearchChanged}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <Search />
-                  </InputAdornment>
-                ),
-              }}
-            />
-          </div>
-          <div className={classes.assetSearchResults}>
+        <div className="h-[600px] overflow-y-scroll p-6">
+          <TextField
+            autoFocus
+            variant="outlined"
+            fullWidth
+            placeholder="CANTO, NOTE, 0x..."
+            value={search}
+            onChange={onSearchChanged}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search />
+                </InputAdornment>
+              ),
+            }}
+          />
+
+          <div className="mt-3 flex w-full min-w-[390px] flex-col">
             {filteredAssetOptions
               ? filteredAssetOptions
                   .sort((a, b) => {
-                    if (BigNumber(a.balance).lt(b.balance)) return 1;
-                    if (BigNumber(a.balance).gt(b.balance)) return -1;
+                    if (
+                      a.balance &&
+                      b.balance &&
+                      BigNumber(a.balance).lt(b.balance)
+                    )
+                      return 1;
+                    if (
+                      a.balance &&
+                      b.balance &&
+                      BigNumber(a.balance).gt(b.balance)
+                    )
+                      return -1;
                     if (a.symbol.toLowerCase() < b.symbol.toLowerCase())
                       return -1;
                     if (a.symbol.toLowerCase() > b.symbol.toLowerCase())
@@ -2167,7 +2131,7 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
               : []}
           </div>
         </div>
-        <div className={classes.manageLocalContainer}>
+        <div className="flex w-full items-center justify-center p-[6px]">
           <Button onClick={toggleLocal}>Manage Local Assets</Button>
         </div>
       </>
@@ -2177,24 +2141,22 @@ function AssetSelect({ type, value, assetOptions, onSelect, disabled }) {
   return (
     <>
       <div
-        className={classes.displaySelectContainer}
+        className="min-h-[100px] p-3"
         onClick={() => {
           openSearch();
         }}
       >
-        <div className={classes.assetSelectMenuItem}>
-          <div className={classes.displayDualIconContainer}>
-            <img
-              className={classes.displayAssetIcon}
-              alt=""
-              src={value ? `${value.logoURI}` : ""}
-              height="100px"
-              onError={(e) => {
-                (e.target as HTMLImageElement).onerror = null;
-                (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
-              }}
-            />
-          </div>
+        <div className="relative w-full">
+          <img
+            className="h-full w-full rounded-[50px] border border-[rgba(126,153,153,0.5)] bg-[#032725] p-[10px]"
+            alt=""
+            src={value && isBaseAsset(value) ? `${value.logoURI}` : ""}
+            height="100px"
+            onError={(e) => {
+              (e.target as HTMLImageElement).onerror = null;
+              (e.target as HTMLImageElement).src = "/tokens/unknown-logo.png";
+            }}
+          />
         </div>
       </div>
       <Dialog

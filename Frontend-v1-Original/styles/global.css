@@ -1,10 +1,21 @@
+@import "Sono.css";
+@import "Monument.css";
+@import "Druk.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html {
-    font-family: "Inter", system-ui, sans-serif;
+  body {
+    color: rgba(255, 255, 255, 0.87);
+  }
+}
+
+@layer utilities {
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    @apply appearance-none;
   }
 }
 

@@ -1,18 +1,27 @@
 import { useState } from "react";
 import { useRouter } from "next/router";
 import { Paper, Typography, IconButton } from "@mui/material";
-import classes from "./ssVest.module.css";
 import moment from "moment";
 import BigNumber from "bignumber.js";
-
 import { ArrowBack } from "@mui/icons-material";
 
+import { GovToken, VestNFT, VeToken } from "../../stores/types/types";
+
+import classes from "./ssVest.module.css";
 import LockAmount from "./lockAmount";
 import LockDuration from "./lockDuration";
 import VestingInfo from "./vestingInfo";
 
-export default function existingLock({ nft, govToken, veToken }) {
-  const [futureNFT, setFutureNFT] = useState(null);
+export default function ExistingLock({
+  nft,
+  govToken,
+  veToken,
+}: {
+  nft: VestNFT;
+  govToken: GovToken | null;
+  veToken: VeToken | null;
+}) {
+  const [futureNFT, setFutureNFT] = useState<VestNFT | null>(null);
 
   const router = useRouter();
 
@@ -20,26 +29,36 @@ export default function existingLock({ nft, govToken, veToken }) {
     router.push("/vest");
   };
 
-  const updateLockAmount = (amount) => {
+  const updateLockAmount = (amount: string) => {
     if (amount === "") {
-      let tmpNFT = {
+      let tmpNFT: VestNFT = {
+        id: "future",
         lockAmount: nft.lockAmount,
         lockValue: nft.lockValue,
         lockEnds: nft.lockEnds,
+        actionedInCurrentEpoch: nft.actionedInCurrentEpoch,
+        reset: nft.reset,
+        lastVoted: nft.lastVoted,
+        influence: nft.influence,
       };
 
       setFutureNFT(tmpNFT);
       return;
     }
 
-    let tmpNFT = {
+    let tmpNFT: VestNFT = {
+      id: "future",
       lockAmount: nft.lockAmount,
       lockValue: nft.lockValue,
       lockEnds: nft.lockEnds,
+      actionedInCurrentEpoch: nft.actionedInCurrentEpoch,
+      reset: nft.reset,
+      lastVoted: nft.lastVoted,
+      influence: nft.influence,
     };
 
     const now = moment();
-    const expiry = moment.unix(tmpNFT.lockEnds);
+    const expiry = moment.unix(+tmpNFT.lockEnds);
     const dayToExpire = expiry.diff(now, "days");
 
     tmpNFT.lockAmount = BigNumber(nft.lockAmount).plus(amount).toFixed(18);
@@ -51,18 +70,23 @@ export default function existingLock({ nft, govToken, veToken }) {
     setFutureNFT(tmpNFT);
   };
 
-  const updateLockDuration = (val) => {
-    let tmpNFT = {
+  const updateLockDuration = (val: string) => {
+    let tmpNFT: VestNFT = {
+      id: "future",
       lockAmount: nft.lockAmount,
       lockValue: nft.lockValue,
       lockEnds: nft.lockEnds,
+      actionedInCurrentEpoch: nft.actionedInCurrentEpoch,
+      reset: nft.reset,
+      lastVoted: nft.lastVoted,
+      influence: nft.influence,
     };
 
     const now = moment();
     const expiry = moment(val);
     const dayToExpire = expiry.diff(now, "days");
 
-    tmpNFT.lockEnds = expiry.unix();
+    tmpNFT.lockEnds = expiry.unix().toString();
     tmpNFT.lockValue = BigNumber(tmpNFT.lockAmount)
       .times(parseInt(dayToExpire.toString()))
       .div(1460)
@@ -89,7 +113,7 @@ export default function existingLock({ nft, govToken, veToken }) {
       <LockDuration nft={nft} updateLockDuration={updateLockDuration} />
       <VestingInfo
         currentNFT={nft}
-        futureNFT={futureNFT}
+        futureNFT={futureNFT || undefined}
         veToken={veToken}
         showVestingStructure={false}
         govToken={govToken}

@@ -14,27 +14,38 @@ import {
 import { useRouter } from "next/router";
 import BigNumber from "bignumber.js";
 import moment from "moment";
+import { ArrowBack } from "@mui/icons-material";
+
 import { formatCurrency } from "../../utils/utils";
-import classes from "./ssVest.module.css";
 import stores from "../../stores";
 import { ACTIONS } from "../../stores/constants/constants";
 
-import { ArrowBack } from "@mui/icons-material";
-import VestingInfo from "./vestingInfo";
+import { GovToken, VeToken, VestNFT } from "../../stores/types/types";
 
-export default function ssLock({ govToken, veToken }) {
-  const inputEl = useRef(null);
+import VestingInfo from "./vestingInfo";
+import classes from "./ssVest.module.css";
+
+import { type LockOption, lockOptions } from "./lockDuration";
+
+export default function Lock({
+  govToken,
+  veToken,
+}: {
+  govToken: GovToken | null;
+  veToken: VeToken | null;
+}) {
+  const inputEl = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
   const [lockLoading, setLockLoading] = useState(false);
 
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState<string | false>(false);
-  const [selectedValue, setSelectedValue] = useState("week");
+  const [selectedValue, setSelectedValue] = useState<string | null>("8"); // select 1 week by default
   const [selectedDate, setSelectedDate] = useState(
     moment().add(7, "days").format("YYYY-MM-DD")
   );
-  const [selectedDateError, setSelectedDateError] = useState(false);
+  const [selectedDateError] = useState(false);
 
   useEffect(() => {
     const lockReturned = () => {
@@ -51,41 +62,26 @@ export default function ssLock({ govToken, veToken }) {
       stores.emitter.removeListener(ACTIONS.ERROR, errorReturned);
       stores.emitter.removeListener(ACTIONS.CREATE_VEST_RETURNED, lockReturned);
     };
-  }, []);
+  }, [router]);
 
-  const setAmountPercent = (percent) => {
+  const setAmountPercent = (percent: number) => {
     setAmount(
-      BigNumber(govToken.balance)
+      BigNumber(govToken?.balance || 0)
         .times(percent)
         .div(100)
-        .toFixed(govToken.decimals)
+        .toFixed(govToken?.decimals ?? 18)
     );
   };
 
-  const handleDateChange = (event) => {
+  const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedDate(event.target.value);
     setSelectedValue(null);
   };
 
-  const handleChange = (event) => {
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedValue(event.target.value);
 
-    let days = 0;
-    switch (event.target.value) {
-      case "week":
-        days = 7;
-        break;
-      case "month":
-        days = 30;
-        break;
-      case "year":
-        days = 365;
-        break;
-      case "years":
-        days = 1460;
-        break;
-      default:
-    }
+    let days = +event.target.value ?? 0;
     const newDate = moment().add(days, "days").format("YYYY-MM-DD");
 
     setSelectedDate(newDate);
@@ -101,9 +97,9 @@ export default function ssLock({ govToken, veToken }) {
       error = true;
     } else {
       if (
-        !govToken.balance ||
-        isNaN(govToken.balance) ||
-        BigNumber(govToken.balance).lte(0)
+        !govToken?.balance ||
+        isNaN(+govToken?.balance) ||
+        BigNumber(govToken?.balance).lte(0)
       ) {
         setAmountError("Invalid balance");
         error = true;
@@ -131,21 +127,18 @@ export default function ssLock({ govToken, veToken }) {
   };
 
   const focus = () => {
-    inputEl.current.focus();
+    inputEl.current?.focus();
   };
 
-  const onAmountChanged = (event) => {
+  const onAmountChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
     setAmountError(false);
     setAmount(event.target.value);
   };
 
   const renderMassiveDateInput = (
-    type,
-    amountValue,
-    amountError,
-    amountChanged,
-    balance,
-    logo
+    amountValue: string,
+    amountError: boolean,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void
   ) => {
     return (
       <div className={classes.textField}>
@@ -193,11 +186,10 @@ export default function ssLock({ govToken, veToken }) {
   };
 
   const renderMassiveInput = (
-    type,
-    amountValue,
-    amountError,
-    amountChanged,
-    token
+    amountValue: string,
+    amountError: string | false,
+    amountChanged: (_event: React.ChangeEvent<HTMLInputElement>) => void,
+    token: GovToken | null
   ) => {
     return (
       <div className={classes.textField}>
@@ -260,7 +252,7 @@ export default function ssLock({ govToken, veToken }) {
             <TextField
               placeholder="0.00"
               fullWidth
-              error={amountError}
+              error={!!amountError}
               helperText={amountError}
               value={amountValue}
               onChange={amountChanged}
@@ -283,13 +275,18 @@ export default function ssLock({ govToken, veToken }) {
     const expiry = moment(selectedDate);
     const dayToExpire = expiry.diff(now, "days");
 
-    const tmpNFT = {
+    const tmpNFT: VestNFT = {
+      id: "future",
       lockAmount: amount,
       lockValue: BigNumber(amount)
         .times(parseInt(dayToExpire.toString()) + 1)
         .div(1460)
         .toFixed(18),
-      lockEnds: expiry.unix(),
+      lockEnds: expiry.unix().toString(),
+      actionedInCurrentEpoch: false,
+      reset: false,
+      lastVoted: BigInt(0),
+      influence: 0,
     };
 
     return (
@@ -317,58 +314,32 @@ export default function ssLock({ govToken, veToken }) {
           </Tooltip>
           <Typography className={classes.titleText}>Create New Lock</Typography>
         </div>
-        {renderMassiveInput(
-          "amount",
-          amount,
-          amountError,
-          onAmountChanged,
-          govToken
-        )}
+        {renderMassiveInput(amount, amountError, onAmountChanged, govToken)}
         <div>
           {renderMassiveDateInput(
-            "date",
             selectedDate,
             selectedDateError,
-            handleDateChange,
-            govToken?.balance,
-            govToken?.logoURI
+            handleDateChange
           )}
           <div className={classes.inline}>
             <Typography className={classes.expiresIn}>Expires: </Typography>
             <RadioGroup
-              className={classes.vestPeriodToggle}
-              row
+              className={`${classes.vestPeriodToggle} grid grid-cols-2`}
               onChange={handleChange}
               value={selectedValue}
             >
-              <FormControlLabel
-                className={classes.vestPeriodLabel}
-                value="week"
-                control={<Radio color="primary" />}
-                label="1 week"
-                labelPlacement="start"
-              />
-              <FormControlLabel
-                className={classes.vestPeriodLabel}
-                value="month"
-                control={<Radio color="primary" />}
-                label="1 month"
-                labelPlacement="start"
-              />
-              <FormControlLabel
-                className={classes.vestPeriodLabel}
-                value="year"
-                control={<Radio color="primary" />}
-                label="1 year"
-                labelPlacement="start"
-              />
-              <FormControlLabel
-                className={classes.vestPeriodLabel}
-                value="years"
-                control={<Radio color="primary" />}
-                label="4 years"
-                labelPlacement="start"
-              />
+              {Object.keys(lockOptions).map((key) => {
+                return (
+                  <FormControlLabel
+                    key={key}
+                    className={classes.vestPeriodLabel}
+                    value={lockOptions[key as LockOption]}
+                    control={<Radio color="primary" />}
+                    label={key}
+                    labelPlacement="end"
+                  />
+                );
+              })}
             </RadioGroup>
           </div>
         </div>

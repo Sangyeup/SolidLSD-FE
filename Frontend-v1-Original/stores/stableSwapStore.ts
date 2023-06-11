@@ -1,15 +1,31 @@
-import moment from "moment";
-import { v4 as uuidv4 } from "uuid";
-import type { Contract } from "web3-eth-contract";
-import type { AbiItem } from "web3-utils";
-import BigNumber from "bignumber.js";
-import Web3 from "web3";
-
-import { Dispatcher } from "flux";
 import EventEmitter from "events";
 
-import stores from ".";
+import moment from "moment";
+import { v4 as uuidv4 } from "uuid";
+import BigNumber from "bignumber.js";
+
+import {
+  getContract,
+  formatUnits,
+  parseUnits,
+  formatEther,
+  parseEther,
+  type WalletClient,
+  type WriteContractReturnType,
+  isAddress,
+  BaseError,
+} from "viem";
+import { canto } from "viem/chains";
+import { getAccount, getWalletClient } from "@wagmi/core";
+
+import { Dispatcher } from "flux";
+
+import { queryClient } from "../pages/_app";
 import { formatCurrency } from "../utils/utils";
+
+import tokenlistArb from "../mainnet-arb-token-list.json";
+import tokenlistCan from "../mainnet-canto-token-list.json";
+
 import {
   ACTIONS,
   CONTRACTS,
@@ -17,22 +33,36 @@ import {
   ZERO_ADDRESS,
   NATIVE_TOKEN,
   W_NATIVE_ADDRESS,
+  W_NATIVE_ABI,
+  PAIR_DECIMALS,
 } from "./constants/constants";
+import viemClient, { chunkArray, multicallChunks } from "./connectors/viem";
 
-import tokenlistArb from "../mainnet-arb-token-list.json";
-import tokenlistCan from "../mainnet-canto-token-list.json";
-import type {
+import {
   BaseAsset,
   Pair,
   RouteAsset,
   VeToken,
   Vote,
   VestNFT,
+  GovToken,
+  Votes,
+  QuoteSwapResponse,
+  Bribe,
+  VeDistReward,
+  ITransaction,
+  Gauge,
+  hasGauge,
+  TransactionStatus,
 } from "./types/types";
+
+import stores from ".";
 
 const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "42161";
 
 const tokenlist = isArbitrum ? tokenlistArb : tokenlistCan;
+
+const CANTO_OPTION_TOKEN = "0x9f9A1Aa08910867F38359F4287865c4A1162C202";
 class Store {
   dispatcher: Dispatcher<any>;
   emitter: EventEmitter;
@@ -40,18 +70,21 @@ class Store {
     baseAssets: BaseAsset[];
     swapAssets: BaseAsset[];
     routeAssets: RouteAsset[];
-    govToken: Omit<BaseAsset, "local"> & { balanceOf: string };
-    veToken: VeToken;
+    govToken: GovToken | null;
+    veToken: VeToken | null;
     pairs: Pair[];
     vestNFTs: VestNFT[];
     rewards: {
-      bribes: any[];
-      fees: any[];
-      rewards: any[];
-      veDist: any[];
+      xBribes: Gauge[];
+      xxBribes: Gauge[];
+      rewards: Gauge[];
+      BLOTR_rewards: Gauge[];
+      veDist: VeDistReward[];
     };
     updateDate: number;
+    tokenPrices: Map<string, number>;
     tvl: number;
+    tbv: number;
     circulatingSupply: number;
     marketCap: number;
   };
@@ -69,33 +102,35 @@ class Store {
       pairs: [],
       vestNFTs: [],
       rewards: {
-        bribes: [],
-        fees: [],
+        xBribes: [],
+        xxBribes: [],
         rewards: [],
+        BLOTR_rewards: [],
         veDist: [],
       },
       updateDate: 0,
+      tokenPrices: new Map(),
       tvl: 0,
+      tbv: 0,
       circulatingSupply: 0,
       marketCap: 0,
     };
 
     dispatcher.register(
-      function (this: Store, payload) {
+      function (this: Store, payload: { type: string; content: any }) {
         console.log("<< Payload of dispatched event", payload);
         switch (payload.type) {
           case ACTIONS.CONFIGURE_SS:
-            this.configure(payload);
+            this.configure();
             break;
           case ACTIONS.GET_BALANCES:
-            this.getBalances(payload);
+            this.getBalances();
             break;
           case ACTIONS.SEARCH_ASSET:
             this.searchBaseAsset(payload);
             break;
-          case ACTIONS.BASE_ASSETS_UPDATED:
+
           case ACTIONS.UPDATED:
-            this.updateSwapAssets();
             break;
 
           // LIQUIDITY
@@ -144,9 +179,14 @@ class Store {
             this.swap(payload);
             break;
 
+          // WRAP / UNWRAP:
+          case ACTIONS.WRAP_UNWRAP:
+            this.wrapOrUnwrap(payload);
+            break;
+
           // VESTING
           case ACTIONS.GET_VEST_NFTS:
-            this.getVestNFTs(payload);
+            this.getVestNFTs();
             break;
           case ACTIONS.CREATE_VEST:
             this.createVest(payload);
@@ -157,8 +197,14 @@ class Store {
           case ACTIONS.INCREASE_VEST_DURATION:
             this.increaseVestDuration(payload);
             break;
+          case ACTIONS.RESET_VEST:
+            this.resetVest(payload);
+            break;
           case ACTIONS.WITHDRAW_VEST:
             this.withdrawVest(payload);
+            break;
+          case ACTIONS.MERGE_NFT:
+            this.mergeNft(payload);
             break;
 
           //VOTE
@@ -171,22 +217,26 @@ class Store {
           case ACTIONS.CREATE_BRIBE:
             this.createBribe(payload);
             break;
-          case ACTIONS.GET_VEST_BALANCES:
-            this.getVestBalances(payload);
-            break;
+          // case ACTIONS.GET_VEST_BALANCES:
+          //   this.getVestBalances(payload);
+          //   break;
 
           //REWARDS
           case ACTIONS.GET_REWARD_BALANCES:
             this.getRewardBalances(payload);
             break;
-          case ACTIONS.CLAIM_BRIBE:
-            this.claimBribes(payload);
+          case ACTIONS.CLAIM_X_BRIBE:
+            this.claimXBribes(payload);
             break;
-          case ACTIONS.CLAIM_PAIR_FEES:
-            this.claimPairFees(payload);
+          case ACTIONS.CLAIM_XX_BRIBE:
+            this.claimXXBribes(payload);
             break;
+
           case ACTIONS.CLAIM_REWARD:
             this.claimRewards(payload);
+            break;
+          case ACTIONS.CLAIM_BLOTR_REWARD:
+            this.claimBlotrRewards(payload);
             break;
           case ACTIONS.CLAIM_VE_DIST:
             this.claimVeDist(payload);
@@ -195,13 +245,20 @@ class Store {
             this.claimAllRewards(payload);
             break;
 
-          //WHITELIST
-          case ACTIONS.SEARCH_WHITELIST:
-            this.searchWhitelist(payload);
+          case ACTIONS.BRIBE_AUTO_BRIBE:
+            this.bribeAutoBribe(payload);
             break;
-          case ACTIONS.WHITELIST_TOKEN:
-            this.whitelistToken(payload);
+
+          case ACTIONS.BUY:
+            this.buy(payload);
             break;
+          case ACTIONS.CLAIM_EARNED:
+            this.claimEarned(payload);
+            break;
+          case ACTIONS.CLAIM_REF_EARNED:
+            this.claimRefEarned(payload);
+            break;
+
           default: {
           }
         }
@@ -218,29 +275,7 @@ class Store {
     return this.emitter.emit(ACTIONS.STORE_UPDATED);
   };
 
-  // COMMON GETTER FUNCTIONS Assets, BaseAssets, Pairs etc
-  // commented out because never used and assets are never in store
-  // getAsset = (address) => {
-  //   const assets = this.store.assets;
-  //   if (!assets || assets.length === 0) {
-  //     return null;
-  //   }
-
-  //   let theAsset = assets.filter((ass) => {
-  //     if (!ass) {
-  //       return false;
-  //     }
-  //     return ass.address.toLowerCase() === address.toLowerCase();
-  //   });
-
-  //   if (!theAsset || theAsset.length === 0) {
-  //     return null;
-  //   }
-
-  //   return theAsset[0];
-  // };
-
-  getNFTByID = async (id) => {
+  getNFTByID = async (id: string) => {
     try {
       const vestNFTs = this.getStore("vestNFTs");
       let theNFT = vestNFTs.filter((vestNFT) => {
@@ -251,52 +286,81 @@ class Store {
         return theNFT[0];
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-      const account = stores.accountStore.getStore("account");
-      if (!account) {
-        console.warn("account not found");
+      const address = getAccount().address;
+      if (!address) {
+        console.warn("address not found");
         return null;
       }
 
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
+      if (!veToken || !govToken) {
+        console.warn("veToken or govToken not found");
+        return null;
+      }
 
-      const vestingContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
+      const vestingContract = {
+        abi: CONTRACTS.VE_TOKEN_ABI,
+        address: CONTRACTS.VE_TOKEN_ADDRESS,
+      } as const;
+
+      const nftsLength = await viemClient.readContract({
+        ...vestingContract,
+        functionName: "balanceOf",
+        args: [address],
+      });
+      const arr = Array.from(
+        { length: parseInt(nftsLength.toString()) },
+        (v, i) => i
       );
-
-      const nftsLength = await vestingContract.methods
-        .balanceOf(account.address)
-        .call();
-      const arr = Array.from({ length: parseInt(nftsLength) }, (v, i) => i);
 
       const nfts: VestNFT[] = await Promise.all(
         arr.map(async (idx) => {
-          const tokenIndex = await vestingContract.methods
-            .tokenOfOwnerByIndex(account.address, idx)
-            .call();
-          const locked = await vestingContract.methods
-            .locked(tokenIndex)
-            .call();
-          const lockValue = await vestingContract.methods
-            .balanceOfNFT(tokenIndex)
-            .call();
+          const tokenIndex = await viemClient.readContract({
+            ...vestingContract,
+            functionName: "tokenOfOwnerByIndex",
+            args: [address, BigInt(idx)],
+          });
+          const [[lockedAmount, lockedEnd], lockValue, voted, totalSupply] =
+            await viemClient.multicall({
+              allowFailure: false,
+              contracts: [
+                {
+                  ...vestingContract,
+                  functionName: "locked",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "balanceOfNFT",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "voted",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "totalSupply",
+                },
+              ],
+            });
 
-          // probably do some decimals math before returning info. Maybe get more info. I don't know what it returns.
+          const [actionedInCurrentEpoch, lastVoted] =
+            await this._checkNFTActionEpoch(tokenIndex.toString());
+
           return {
-            id: tokenIndex,
-            lockEnds: locked.end,
-            lockAmount: BigNumber(locked.amount)
-              .div(10 ** govToken.decimals)
-              .toFixed(govToken.decimals),
-            lockValue: BigNumber(lockValue)
-              .div(10 ** veToken.decimals)
-              .toFixed(veToken.decimals),
+            id: tokenIndex.toString(),
+            lockEnds: lockedEnd.toString(),
+            lockAmount: formatUnits(lockedAmount, govToken.decimals),
+            lockValue: formatUnits(lockValue, veToken.decimals),
+            actionedInCurrentEpoch,
+            reset: actionedInCurrentEpoch && !voted,
+            lastVoted,
+            influence:
+              Number(formatUnits(lockValue, veToken.decimals)) /
+              Number(formatUnits(totalSupply, veToken.decimals)),
           };
         })
       );
@@ -318,7 +382,7 @@ class Store {
     }
   };
 
-  _updateVestNFTByID = async (id) => {
+  _updateVestNFTByID = async (id: string) => {
     try {
       const vestNFTs = this.getStore("vestNFTs");
       let theNFT = vestNFTs.filter((vestNFT) => {
@@ -329,12 +393,7 @@ class Store {
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
@@ -342,26 +401,64 @@ class Store {
 
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
+      if (!veToken || !govToken) {
+        console.warn("veToken or govToken not found");
+        return null;
+      }
 
-      const vestingContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
-      );
+      const vestingContract = {
+        abi: CONTRACTS.VE_TOKEN_ABI,
+        address: CONTRACTS.VE_TOKEN_ADDRESS,
+      } as const;
 
-      const locked = await vestingContract.methods.locked(id).call();
-      const lockValue = await vestingContract.methods.balanceOfNFT(id).call();
+      const tokenIndex = await viemClient.readContract({
+        ...vestingContract,
+        functionName: "tokenOfOwnerByIndex",
+        args: [account, BigInt(id)],
+      });
+
+      const [[lockedAmount, lockedEnd], lockValue, voted, totalSupply] =
+        await viemClient.multicall({
+          allowFailure: false,
+          contracts: [
+            {
+              ...vestingContract,
+              functionName: "locked",
+              args: [tokenIndex],
+            },
+            {
+              ...vestingContract,
+              functionName: "balanceOfNFT",
+              args: [tokenIndex],
+            },
+            {
+              ...vestingContract,
+              functionName: "voted",
+              args: [tokenIndex],
+            },
+            {
+              ...vestingContract,
+              functionName: "totalSupply",
+            },
+          ],
+        });
+
+      const [actionedInCurrentEpoch, lastVoted] =
+        await this._checkNFTActionEpoch(id);
 
       const newVestNFTs: VestNFT[] = vestNFTs.map((nft) => {
         if (nft.id == id) {
           return {
             id: id,
-            lockEnds: locked.end,
-            lockAmount: BigNumber(locked.amount)
-              .div(10 ** govToken.decimals)
-              .toFixed(govToken.decimals),
-            lockValue: BigNumber(lockValue)
-              .div(10 ** veToken.decimals)
-              .toFixed(veToken.decimals),
+            lockEnds: lockedEnd.toString(),
+            lockAmount: formatUnits(lockedAmount, govToken.decimals),
+            lockValue: formatUnits(lockValue, veToken.decimals),
+            actionedInCurrentEpoch,
+            reset: actionedInCurrentEpoch && !voted,
+            lastVoted,
+            influence:
+              Number(formatUnits(lockValue, veToken.decimals)) /
+              Number(formatUnits(totalSupply, veToken.decimals)),
           };
         }
 
@@ -377,66 +474,71 @@ class Store {
     }
   };
 
-  getPairByAddress = async (pairAddress) => {
+  getPairByAddress = async (pairAddress: `0x${string}`) => {
     try {
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
       const pairs = this.getStore("pairs");
-      let thePair: any = pairs.filter((pair) => {
+      const filteredPairs = pairs.filter((pair) => {
         return pair.address.toLowerCase() == pairAddress.toLowerCase();
       });
 
-      if (thePair.length > 0) {
-        const pc = new web3.eth.Contract(
-          CONTRACTS.PAIR_ABI as AbiItem[],
-          pairAddress
-        );
+      if (filteredPairs.length > 0) {
+        const pc = {
+          abi: CONTRACTS.PAIR_ABI,
+          address: pairAddress,
+        } as const;
 
-        const [totalSupply, reserve0, reserve1, balanceOf] = await Promise.all([
-          pc.methods.totalSupply().call(),
-          pc.methods.reserve0().call(),
-          pc.methods.reserve1().call(),
-          pc.methods.balanceOf(account.address).call(),
-        ]);
+        const [totalSupply, reserve0, reserve1, balanceOf] =
+          await viemClient.multicall({
+            allowFailure: false,
+            contracts: [
+              {
+                ...pc,
+                functionName: "totalSupply",
+              },
+              {
+                ...pc,
+                functionName: "reserve0",
+              },
+              {
+                ...pc,
+                functionName: "reserve1",
+              },
+              {
+                ...pc,
+                functionName: "balanceOf",
+                args: [account],
+              },
+            ],
+          });
 
-        const returnPair = thePair[0];
-        returnPair.balance = BigNumber(balanceOf)
-          .div(10 ** returnPair.decimals)
-          .toFixed(parseInt(returnPair.decimals));
-        returnPair.totalSupply = BigNumber(totalSupply)
-          .div(10 ** returnPair.decimals)
-          .toFixed(parseInt(returnPair.decimals));
-        returnPair.reserve0 = BigNumber(reserve0)
-          .div(10 ** returnPair.token0.decimals)
-          .toFixed(parseInt(returnPair.token0.decimals));
-        returnPair.reserve1 = BigNumber(reserve1)
-          .div(10 ** returnPair.token1.decimals)
-          .toFixed(parseInt(returnPair.token1.decimals));
+        const returnPair = filteredPairs[0];
+        returnPair.balance = formatUnits(balanceOf, PAIR_DECIMALS);
+        returnPair.totalSupply = formatUnits(totalSupply, PAIR_DECIMALS);
+        returnPair.reserve0 = formatUnits(reserve0, returnPair.token0.decimals);
+        returnPair.reserve1 = formatUnits(reserve1, returnPair.token1.decimals);
 
         return returnPair;
       }
 
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pairAddress
-      );
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
+      const pairContract = {
+        abi: CONTRACTS.PAIR_ABI,
+        address: pairAddress,
+      } as const;
+      const gaugesContract = {
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+      } as const;
 
-      const [totalWeight] = await Promise.all([
-        gaugesContract.methods.totalWeight().call(),
-      ]);
+      const totalWeight = await viemClient.readContract({
+        ...gaugesContract,
+        functionName: "totalWeight",
+      });
 
       const [
         token0,
@@ -450,32 +552,68 @@ class Store {
         stable,
         gaugeAddress,
         gaugeWeight,
-        claimable0,
-        claimable1,
-      ] = await Promise.all([
-        pairContract.methods.token0().call(),
-        pairContract.methods.token1().call(),
-        pairContract.methods.totalSupply().call(),
-        pairContract.methods.symbol().call(),
-        pairContract.methods.reserve0().call(),
-        pairContract.methods.reserve1().call(),
-        pairContract.methods.decimals().call(),
-        pairContract.methods.balanceOf(account.address).call(),
-        pairContract.methods.stable().call(),
-        gaugesContract.methods.gauges(pairAddress).call(),
-        gaugesContract.methods.weights(pairAddress).call(),
-        pairContract.methods.claimable0(account.address).call(),
-        pairContract.methods.claimable1(account.address).call(),
-      ]);
+      ] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...pairContract,
+            functionName: "token0",
+          },
+          {
+            ...pairContract,
+            functionName: "token1",
+          },
+          {
+            ...pairContract,
+            functionName: "totalSupply",
+          },
+          {
+            ...pairContract,
+            functionName: "symbol",
+          },
+          {
+            ...pairContract,
+            functionName: "reserve0",
+          },
+          {
+            ...pairContract,
+            functionName: "reserve1",
+          },
+          {
+            ...pairContract,
+            functionName: "decimals",
+          },
+          {
+            ...pairContract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+          {
+            ...pairContract,
+            functionName: "stable",
+          },
+          {
+            ...gaugesContract,
+            functionName: "gauges",
+            args: [pairAddress],
+          },
+          {
+            ...gaugesContract,
+            functionName: "weights",
+            args: [pairAddress],
+          },
+        ],
+      });
 
-      const token0Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        token0
-      );
-      const token1Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        token1
-      );
+      const token0Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: token0,
+      } as const;
+
+      const token1Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: token1,
+      } as const;
 
       const [
         token0Symbol,
@@ -484,120 +622,297 @@ class Store {
         token1Symbol,
         token1Decimals,
         token1Balance,
-      ] = await Promise.all([
-        token0Contract.methods.symbol().call(),
-        token0Contract.methods.decimals().call(),
-        token0Contract.methods.balanceOf(account.address).call(),
-        token1Contract.methods.symbol().call(),
-        token1Contract.methods.decimals().call(),
-        token1Contract.methods.balanceOf(account.address).call(),
-      ]);
+      ] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...token0Contract,
+            functionName: "symbol",
+          },
+          {
+            ...token0Contract,
+            functionName: "decimals",
+          },
+          {
+            ...token0Contract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+          {
+            ...token1Contract,
+            functionName: "symbol",
+          },
+          {
+            ...token1Contract,
+            functionName: "decimals",
+          },
+          {
+            ...token1Contract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+        ],
+      });
 
-      thePair = {
+      const thePair: Pair = {
         address: pairAddress,
         symbol: symbol,
-        decimals: parseInt(decimals),
+        decimals: decimals,
         stable,
         token0: {
           address: token0,
           symbol: token0Symbol,
-          balance: BigNumber(token0Balance)
-            .div(10 ** token0Decimals)
-            .toFixed(parseInt(token0Decimals)),
-          decimals: parseInt(token0Decimals),
+          balance: formatUnits(
+            token0Balance,
+            parseInt(token0Decimals.toString())
+          ),
+          decimals: parseInt(token0Decimals.toString()),
+          name: "",
+          logoURI: "",
+          local: false,
         },
         token1: {
           address: token1,
           symbol: token1Symbol,
-          balance: BigNumber(token1Balance)
-            .div(10 ** token1Decimals)
-            .toFixed(parseInt(token1Decimals)),
-          decimals: parseInt(token1Decimals),
+          balance: formatUnits(
+            token1Balance,
+            parseInt(token1Decimals.toString())
+          ),
+          decimals: parseInt(token1Decimals.toString()),
+          name: "",
+          logoURI: "",
+          local: false,
         },
-        balance: BigNumber(balanceOf)
-          .div(10 ** decimals)
-          .toFixed(parseInt(decimals)),
-        totalSupply: BigNumber(totalSupply)
-          .div(10 ** decimals)
-          .toFixed(parseInt(decimals)),
-        reserve0: BigNumber(reserve0)
-          .div(10 ** token0Decimals)
-          .toFixed(parseInt(token0Decimals)),
-        reserve1: BigNumber(reserve1)
-          .div(10 ** token1Decimals)
-          .toFixed(parseInt(token1Decimals)),
-        claimable0: BigNumber(claimable0)
-          .div(10 ** token0Decimals)
-          .toFixed(parseInt(token0Decimals)),
-        claimable1: BigNumber(claimable1)
-          .div(10 ** token1Decimals)
-          .toFixed(parseInt(token1Decimals)),
+        apr: 0,
+        oblotr_apr: 0,
+        total_supply: 0,
+        token0_address: token0,
+        token1_address: token1,
+        balance: formatUnits(balanceOf, decimals),
+        totalSupply: formatUnits(totalSupply, decimals),
+        reserve0: formatUnits(reserve0, parseInt(token0Decimals.toString())),
+        reserve1: formatUnits(reserve1, parseInt(token1Decimals.toString())),
+        tvl: 0,
+        gauge_address: gaugeAddress,
+        isStable: stable,
       };
 
       if (gaugeAddress !== ZERO_ADDRESS) {
-        const gaugeContract = new web3.eth.Contract(
-          CONTRACTS.GAUGE_ABI as AbiItem[],
-          gaugeAddress
-        );
+        const gaugeContract = {
+          abi: CONTRACTS.GAUGE_ABI,
+          address: gaugeAddress,
+        } as const;
 
-        const [totalSupply, gaugeBalance, bribeAddress] = await Promise.all([
-          gaugeContract.methods.totalSupply().call(),
-          gaugeContract.methods.balanceOf(account.address).call(),
-          gaugesContract.methods.bribes(gaugeAddress).call(),
-        ]);
+        const external_bribe = await viemClient.readContract({
+          ...gaugeContract,
+          functionName: "external_bribe",
+        });
 
-        const bribeContract = new web3.eth.Contract(
-          CONTRACTS.BRIBE_ABI as AbiItem[],
-          thePair.gauge.wrapped_bribe_address
-        );
+        const wrapped_bribe_address = await viemClient.readContract({
+          address: CONTRACTS.WXB_ADDRESS,
+          abi: CONTRACTS.BRIBE_FACTORY_ABI,
+          functionName: "oldBribeToNew",
+          args: [external_bribe],
+        });
+        const x_wrapped_bribe_address = await viemClient.readContract({
+          address: CONTRACTS.X_WXB_ADDRESS,
+          abi: CONTRACTS.BRIBE_FACTORY_ABI,
+          functionName: "oldBribeToNew",
+          args: [external_bribe],
+        });
+        const xx_wrapped_bribe_address = await viemClient.readContract({
+          address: CONTRACTS.XX_WXB_ADDRESS,
+          abi: CONTRACTS.BRIBE_FACTORY_ABI,
+          functionName: "oldBribeToNew",
+          args: [external_bribe],
+        });
 
-        const tokensLength = await bribeContract.methods
-          .rewardsListLength()
-          .call();
+        //wrapped bribe address is coming from api. if the api doesnt work this will break
+        const bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: wrapped_bribe_address,
+        } as const;
+        const bribeContractInstance = getContract({
+          ...bribeContract,
+          publicClient: viemClient,
+        });
+        const x_bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: x_wrapped_bribe_address,
+        } as const;
+        const x_bribeContractInstance = getContract({
+          ...x_bribeContract,
+          publicClient: viemClient,
+        });
+        const xx_bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: xx_wrapped_bribe_address,
+        } as const;
+        const xx_bribeContractInstance = getContract({
+          ...xx_bribeContract,
+          publicClient: viemClient,
+        });
+
+        const [totalSupply, gaugeBalance, bribeAddress] =
+          await viemClient.multicall({
+            allowFailure: false,
+            contracts: [
+              {
+                ...gaugeContract,
+                functionName: "totalSupply",
+              },
+              {
+                ...gaugeContract,
+                functionName: "balanceOf",
+                args: [account],
+              },
+              {
+                ...gaugesContract,
+                functionName: "external_bribes",
+                args: [gaugeAddress],
+              },
+            ],
+          });
+
+        const tokensLength =
+          await bribeContractInstance.read.rewardsListLength();
+        const x_tokensLength =
+          await x_bribeContractInstance.read.rewardsListLength();
+        const xx_tokensLength =
+          await xx_bribeContractInstance.read.rewardsListLength();
+
         const arry = Array.from(
-          { length: parseInt(tokensLength) },
+          { length: parseInt(tokensLength.toString()) },
+          (v, i) => i
+        );
+        const x_arry = Array.from(
+          { length: parseInt(x_tokensLength.toString()) },
+          (v, i) => i
+        );
+        const xx_arry = Array.from(
+          { length: parseInt(xx_tokensLength.toString()) },
           (v, i) => i
         );
 
         const bribes = await Promise.all(
           arry.map(async (idx) => {
-            const tokenAddress = await bribeContract.methods
-              .rewards(idx)
-              .call();
-            const token = await this.getBaseAsset(tokenAddress);
-
-            const [rewardRate] = await Promise.all([
-              bribeContract.methods.rewardRate(tokenAddress).call(),
+            const tokenAddress = await bribeContractInstance.read.rewards([
+              BigInt(idx),
             ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              throw new Error("No token found. getPairByAddress");
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
 
             return {
               token: token,
-              rewardAmount: BigNumber(rewardRate)
-                .times(604800)
-                .div(10 ** token.decimals)
-                .toFixed(token.decimals),
+              rewardAmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              reward_ammount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              rewardAmmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+            };
+          })
+        );
+        const x_bribes = await Promise.all(
+          x_arry.map(async (idx) => {
+            const tokenAddress = await x_bribeContractInstance.read.rewards([
+              BigInt(idx),
+            ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              throw new Error("No token found. getPairByAddress");
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
+
+            return {
+              token: token,
+              rewardAmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              reward_ammount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              rewardAmmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+            };
+          })
+        );
+        const xx_bribes = await Promise.all(
+          xx_arry.map(async (idx) => {
+            const tokenAddress = await xx_bribeContractInstance.read.rewards([
+              BigInt(idx),
+            ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              throw new Error("No token found. getPairByAddress");
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
+
+            return {
+              token: token,
+              rewardAmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              reward_ammount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
+              rewardAmmount: Number(
+                formatUnits(rewardRate * BigInt(604800), token.decimals)
+              ),
             };
           })
         );
 
+        const weightPercent = (
+          (Number(gaugeWeight) * 100) /
+          Number(totalWeight)
+        ).toFixed(2);
+
         thePair.gauge = {
           address: gaugeAddress,
+          apr: 0,
+          votes: 0,
+          tbv: 0,
+          reward: 0,
           bribeAddress: bribeAddress,
+          bribe_address: bribeAddress,
           decimals: 18,
-          balance: BigNumber(gaugeBalance)
-            .div(10 ** 18)
-            .toFixed(18),
-          totalSupply: BigNumber(totalSupply)
-            .div(10 ** 18)
-            .toFixed(18),
-          weight: BigNumber(gaugeWeight)
-            .div(10 ** 18)
-            .toFixed(18),
-          weightPercent: BigNumber(gaugeWeight)
-            .times(100)
-            .div(totalWeight)
-            .toFixed(2),
+          balance: formatEther(gaugeBalance),
+          totalSupply: formatEther(totalSupply),
+          total_supply: Number(formatEther(totalSupply)),
+          weight: formatEther(gaugeWeight),
+          weightPercent,
           bribes: bribes,
+          x_bribes: x_bribes,
+          xx_bribes: xx_bribes,
+          wrapped_bribe_address,
+          x_wrapped_bribe_address,
+          xx_wrapped_bribe_address,
         };
       }
 
@@ -611,20 +926,19 @@ class Store {
     }
   };
 
-  getPair = async (addressA, addressB, stab) => {
+  getPair = async (
+    addressA: `0x${string}`,
+    addressB: `0x${string}`,
+    stab: boolean
+  ) => {
     if (addressA === NATIVE_TOKEN.symbol) {
-      addressA = W_NATIVE_ADDRESS;
+      addressA = W_NATIVE_ADDRESS as `0x${string}`;
     }
     if (addressB === NATIVE_TOKEN.symbol) {
-      addressB = W_NATIVE_ADDRESS;
+      addressB = W_NATIVE_ADDRESS as `0x${string}`;
     }
 
-    const web3 = await stores.accountStore.getWeb3Provider();
-    if (!web3) {
-      console.warn("web3 not found");
-      return null;
-    }
-    const account = stores.accountStore.getStore("account");
+    const account = getAccount().address;
     if (!account) {
       console.warn("account not found");
       return null;
@@ -642,56 +956,69 @@ class Store {
       );
     });
     if (thePair.length > 0) {
-      const pc = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        thePair[0].address
-      );
+      const pc = {
+        abi: CONTRACTS.PAIR_ABI,
+        address: thePair[0].address,
+      } as const;
 
-      const [totalSupply, reserve0, reserve1, balanceOf] = await Promise.all([
-        pc.methods.totalSupply().call(),
-        pc.methods.reserve0().call(),
-        pc.methods.reserve1().call(),
-        pc.methods.balanceOf(account.address).call(),
-      ]);
+      const [totalSupply, reserve0, reserve1, balanceOf] =
+        await viemClient.multicall({
+          allowFailure: false,
+          contracts: [
+            {
+              ...pc,
+              functionName: "totalSupply",
+            },
+            {
+              ...pc,
+              functionName: "reserve0",
+            },
+            {
+              ...pc,
+              functionName: "reserve1",
+            },
+            {
+              ...pc,
+              functionName: "balanceOf",
+              args: [account],
+            },
+          ],
+        });
 
       const returnPair = thePair[0];
-      returnPair.balance = BigNumber(balanceOf)
-        .div(10 ** returnPair.decimals)
-        .toFixed(parseInt(returnPair.decimals));
-      returnPair.totalSupply = BigNumber(totalSupply)
-        .div(10 ** returnPair.decimals)
-        .toFixed(parseInt(returnPair.decimals));
-      returnPair.reserve0 = BigNumber(reserve0)
-        .div(10 ** returnPair.token0.decimals)
-        .toFixed(parseInt(returnPair.token0.decimals));
-      returnPair.reserve1 = BigNumber(reserve1)
-        .div(10 ** returnPair.token1.decimals)
-        .toFixed(parseInt(returnPair.token1.decimals));
+      returnPair.balance = formatUnits(balanceOf, PAIR_DECIMALS);
+      returnPair.totalSupply = formatUnits(totalSupply, PAIR_DECIMALS);
+      returnPair.reserve0 = formatUnits(reserve0, returnPair.token0.decimals);
+      returnPair.reserve1 = formatUnits(reserve1, returnPair.token1.decimals);
 
       return returnPair;
     }
 
-    const factoryContract = new web3.eth.Contract(
-      CONTRACTS.FACTORY_ABI as AbiItem[],
-      CONTRACTS.FACTORY_ADDRESS
-    );
-    const pairAddress = await factoryContract.methods
-      .getPair(addressA, addressB, stab)
-      .call();
+    const factoryContract = getContract({
+      abi: CONTRACTS.FACTORY_ABI,
+      address: CONTRACTS.FACTORY_ADDRESS,
+      publicClient: viemClient,
+    });
+    const pairAddress = await factoryContract.read.getPair([
+      addressA,
+      addressB,
+      stab,
+    ]);
 
     if (pairAddress && pairAddress != ZERO_ADDRESS) {
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pairAddress
-      );
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
+      const pairContract = {
+        abi: CONTRACTS.PAIR_ABI,
+        address: pairAddress,
+      } as const;
+      const gaugesContract = {
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+      } as const;
 
-      const [totalWeight] = await Promise.all([
-        gaugesContract.methods.totalWeight().call(),
-      ]);
+      const totalWeight = await viemClient.readContract({
+        ...gaugesContract,
+        functionName: "totalWeight",
+      });
 
       const [
         token0,
@@ -705,32 +1032,68 @@ class Store {
         stable,
         gaugeAddress,
         gaugeWeight,
-        claimable0,
-        claimable1,
-      ] = await Promise.all([
-        pairContract.methods.token0().call(),
-        pairContract.methods.token1().call(),
-        pairContract.methods.totalSupply().call(),
-        pairContract.methods.symbol().call(),
-        pairContract.methods.reserve0().call(),
-        pairContract.methods.reserve1().call(),
-        pairContract.methods.decimals().call(),
-        pairContract.methods.balanceOf(account.address).call(),
-        pairContract.methods.stable().call(),
-        gaugesContract.methods.gauges(pairAddress).call(),
-        gaugesContract.methods.weights(pairAddress).call(),
-        pairContract.methods.claimable0(account.address).call(),
-        pairContract.methods.claimable1(account.address).call(),
-      ]);
+      ] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...pairContract,
+            functionName: "token0",
+          },
+          {
+            ...pairContract,
+            functionName: "token1",
+          },
+          {
+            ...pairContract,
+            functionName: "totalSupply",
+          },
+          {
+            ...pairContract,
+            functionName: "symbol",
+          },
+          {
+            ...pairContract,
+            functionName: "reserve0",
+          },
+          {
+            ...pairContract,
+            functionName: "reserve1",
+          },
+          {
+            ...pairContract,
+            functionName: "decimals",
+          },
+          {
+            ...pairContract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+          {
+            ...pairContract,
+            functionName: "stable",
+          },
+          {
+            ...gaugesContract,
+            functionName: "gauges",
+            args: [pairAddress],
+          },
+          {
+            ...gaugesContract,
+            functionName: "weights",
+            args: [pairAddress],
+          },
+        ],
+      });
 
-      const token0Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        token0
-      );
-      const token1Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        token1
-      );
+      const token0Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: token0,
+      } as const;
+
+      const token1Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: token1,
+      } as const;
 
       const [
         token0Symbol,
@@ -739,123 +1102,235 @@ class Store {
         token1Symbol,
         token1Decimals,
         token1Balance,
-      ] = await Promise.all([
-        token0Contract.methods.symbol().call(),
-        token0Contract.methods.decimals().call(),
-        token0Contract.methods.balanceOf(account.address).call(),
-        token1Contract.methods.symbol().call(),
-        token1Contract.methods.decimals().call(),
-        token1Contract.methods.balanceOf(account.address).call(),
-      ]);
+      ] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...token0Contract,
+            functionName: "symbol",
+          },
+          {
+            ...token0Contract,
+            functionName: "decimals",
+          },
+          {
+            ...token0Contract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+          {
+            ...token1Contract,
+            functionName: "symbol",
+          },
+          {
+            ...token1Contract,
+            functionName: "decimals",
+          },
+          {
+            ...token1Contract,
+            functionName: "balanceOf",
+            args: [account],
+          },
+        ],
+      });
 
       thePair = {
         address: pairAddress,
         symbol: symbol,
-        decimals: parseInt(decimals),
+        decimals: decimals,
         stable,
         token0: {
           address: token0,
           symbol: token0Symbol,
-          balance: BigNumber(token0Balance)
-            .div(10 ** token0Decimals)
-            .toFixed(parseInt(token0Decimals)),
-          decimals: parseInt(token0Decimals),
+          balance: formatUnits(
+            token0Balance,
+            parseInt(token0Decimals.toString())
+          ),
+          decimals: parseInt(token0Decimals.toString()),
         },
         token1: {
           address: token1,
           symbol: token1Symbol,
-          balance: BigNumber(token1Balance)
-            .div(10 ** token1Decimals)
-            .toFixed(parseInt(token1Decimals)),
-          decimals: parseInt(token1Decimals),
+          balance: formatUnits(
+            token1Balance,
+            parseInt(token1Decimals.toString())
+          ),
+          decimals: parseInt(token1Decimals.toString()),
         },
-        balance: BigNumber(balanceOf)
-          .div(10 ** decimals)
-          .toFixed(parseInt(decimals)),
-        totalSupply: BigNumber(totalSupply)
-          .div(10 ** decimals)
-          .toFixed(parseInt(decimals)),
-        reserve0: BigNumber(reserve0)
-          .div(10 ** token0Decimals)
-          .toFixed(parseInt(token0Decimals)),
-        reserve1: BigNumber(reserve1)
-          .div(10 ** token1Decimals)
-          .toFixed(parseInt(token1Decimals)),
-        claimable0: BigNumber(claimable0)
-          .div(10 ** token0Decimals)
-          .toFixed(parseInt(token0Decimals)),
-        claimable1: BigNumber(claimable1)
-          .div(10 ** token1Decimals)
-          .toFixed(parseInt(token1Decimals)),
+        balance: formatUnits(balanceOf, decimals),
+        totalSupply: formatUnits(totalSupply, decimals),
+        reserve0: formatUnits(reserve0, parseInt(token0Decimals.toString())),
+        reserve1: formatUnits(reserve1, parseInt(token1Decimals.toString())),
+        tvl: 0,
       };
 
       if (gaugeAddress !== ZERO_ADDRESS) {
-        const gaugeContract = new web3.eth.Contract(
-          CONTRACTS.GAUGE_ABI as AbiItem[],
-          gaugeAddress
-        );
+        const gaugeContract = {
+          abi: CONTRACTS.GAUGE_ABI,
+          address: gaugeAddress,
+        } as const;
+        //wrapped bribe address is coming from api. if the api doesnt work this will break
+        const bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: thePair.gauge.wrapped_bribe_address,
+        } as const;
+        const bribeContractInstance = getContract({
+          ...bribeContract,
+          publicClient: viemClient,
+        });
+        const x_bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: thePair.gauge.x_wrapped_bribe_address,
+        } as const;
+        const x_bribeContractInstance = getContract({
+          ...x_bribeContract,
+          publicClient: viemClient,
+        });
+        const xx_bribeContract = {
+          abi: CONTRACTS.BRIBE_ABI,
+          address: thePair.gauge.xx_wrapped_bribe_address,
+        } as const;
+        const xx_bribeContractInstance = getContract({
+          ...xx_bribeContract,
+          publicClient: viemClient,
+        });
 
-        const [totalSupply, gaugeBalance, bribeAddress] = await Promise.all([
-          gaugeContract.methods.totalSupply().call(),
-          gaugeContract.methods.balanceOf(account.address).call(),
-          gaugesContract.methods.bribes(gaugeAddress).call(),
-        ]);
-        // NOTE: this bribe contract is ExternalBribe so we can ask rewardRate directly (line 791)
-        const bribeContract = new web3.eth.Contract(
-          CONTRACTS.BRIBE_ABI as AbiItem[],
-          thePair.gauge.wrapped_bribe_address
-        );
+        const [totalSupply, gaugeBalance, bribeAddress] =
+          await viemClient.multicall({
+            allowFailure: false,
+            contracts: [
+              {
+                ...gaugeContract,
+                functionName: "totalSupply",
+              },
+              {
+                ...gaugeContract,
+                functionName: "balanceOf",
+                args: [account],
+              },
+              {
+                ...gaugesContract,
+                functionName: "external_bribes",
+                args: [gaugeAddress],
+              },
+            ],
+          });
 
-        const tokensLength = await bribeContract.methods
-          .rewardsListLength()
-          .call();
+        const tokensLength =
+          await bribeContractInstance.read.rewardsListLength();
+        const x_tokensLength =
+          await x_bribeContractInstance.read.rewardsListLength();
+        const xx_tokensLength =
+          await xx_bribeContractInstance.read.rewardsListLength();
+
         const arry = Array.from(
-          { length: parseInt(tokensLength) },
+          { length: parseInt(tokensLength.toString()) },
+          (v, i) => i
+        );
+        const x_arry = Array.from(
+          { length: parseInt(x_tokensLength.toString()) },
+          (v, i) => i
+        );
+        const xx_arry = Array.from(
+          { length: parseInt(xx_tokensLength.toString()) },
           (v, i) => i
         );
 
         const bribes = await Promise.all(
           arry.map(async (idx) => {
-            const tokenAddress = await bribeContract.methods
-              .rewards(idx)
-              .call();
-            const token = await this.getBaseAsset(tokenAddress);
-
-            const [rewardRate] = await Promise.all([
-              bribeContract.methods.rewardRate(tokenAddress).call(),
+            const tokenAddress = await bribeContractInstance.read.rewards([
+              BigInt(idx),
             ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              return null;
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
 
             return {
               token: token,
-              rewardRate: BigNumber(rewardRate)
-                .div(10 ** token.decimals)
-                .toFixed(token.decimals),
-              rewardAmount: BigNumber(rewardRate)
-                .times(604800)
-                .div(10 ** token.decimals)
-                .toFixed(token.decimals),
+              rewardAmount: formatUnits(
+                rewardRate * BigInt(604800),
+                token.decimals
+              ),
             };
           })
         );
+        const x_bribes = await Promise.all(
+          x_arry.map(async (idx) => {
+            const tokenAddress = await x_bribeContractInstance.read.rewards([
+              BigInt(idx),
+            ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              return null;
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
+
+            return {
+              token: token,
+              rewardAmount: formatUnits(
+                rewardRate * BigInt(604800),
+                token.decimals
+              ),
+            };
+          })
+        );
+        const xx_bribes = await Promise.all(
+          xx_arry.map(async (idx) => {
+            const tokenAddress = await xx_bribeContractInstance.read.rewards([
+              BigInt(idx),
+            ]);
+
+            const token = await this.getBaseAsset(tokenAddress);
+            if (!token) {
+              return null;
+            }
+
+            const rewardRate = await viemClient.readContract({
+              ...gaugeContract,
+              functionName: "rewardRate",
+              args: [tokenAddress],
+            });
+
+            return {
+              token: token,
+              rewardAmount: formatUnits(
+                rewardRate * BigInt(604800),
+                token.decimals
+              ),
+            };
+          })
+        );
+
+        const weightPercent = (
+          (Number(gaugeWeight) * 100) /
+          Number(totalWeight)
+        ).toFixed(2);
 
         thePair.gauge = {
           address: gaugeAddress,
           bribeAddress: bribeAddress,
           decimals: 18,
-          balance: BigNumber(gaugeBalance)
-            .div(10 ** 18)
-            .toFixed(18),
-          totalSupply: BigNumber(totalSupply)
-            .div(10 ** 18)
-            .toFixed(18),
-          weight: BigNumber(gaugeWeight)
-            .div(10 ** 18)
-            .toFixed(18),
-          weightPercent: BigNumber(gaugeWeight)
-            .times(100)
-            .div(totalWeight)
-            .toFixed(2),
+          balance: formatEther(gaugeBalance),
+          totalSupply: formatEther(totalSupply),
+          weight: formatEther(gaugeWeight),
+          weightPercent,
           bribes: bribes,
+          x_bribes: x_bribes,
+          xx_bribes: xx_bribes,
         };
       }
 
@@ -868,17 +1343,15 @@ class Store {
     return null;
   };
 
-  removeBaseAsset = (asset) => {
+  removeBaseAsset = (asset: BaseAsset) => {
     try {
-      let localBaseAssets = [];
+      let localBaseAssets: BaseAsset[] = [];
       const localBaseAssetsString = localStorage.getItem("stableSwap-assets");
-
-      console.log("localbaseassets", localBaseAssetsString);
 
       if (localBaseAssetsString && localBaseAssetsString !== "") {
         localBaseAssets = JSON.parse(localBaseAssetsString);
 
-        localBaseAssets = localBaseAssets.filter(function (obj) {
+        localBaseAssets = localBaseAssets.filter((obj) => {
           return obj.address.toLowerCase() !== asset.address.toLowerCase();
         });
 
@@ -888,7 +1361,7 @@ class Store {
         );
 
         let baseAssets = this.getStore("baseAssets");
-        baseAssets = baseAssets.filter(function (obj) {
+        baseAssets = baseAssets.filter((obj) => {
           return (
             obj.address.toLowerCase() !== asset.address.toLowerCase() &&
             asset.local === true
@@ -896,6 +1369,7 @@ class Store {
         });
 
         this.setStore({ baseAssets: baseAssets });
+        this.updateSwapAssets(baseAssets);
         this.emitter.emit(ACTIONS.BASE_ASSETS_UPDATED, baseAssets);
       }
     } catch (ex) {
@@ -920,7 +1394,11 @@ class Store {
     }
   };
 
-  getBaseAsset = async (address, save?, getBalance?) => {
+  getBaseAsset = async (
+    address: `0x${string}`,
+    save?: boolean,
+    getBalance?: boolean
+  ) => {
     try {
       const baseAssets = this.getStore("baseAssets");
 
@@ -932,28 +1410,34 @@ class Store {
       }
 
       // not found, so we search the blockchain for it.
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
+      const baseAssetContract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: address,
+      } as const;
 
-      const baseAssetContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        address
-      );
-
-      const [symbol, decimals, name] = await Promise.all([
-        baseAssetContract.methods.symbol().call(),
-        baseAssetContract.methods.decimals().call(),
-        baseAssetContract.methods.name().call(),
-      ]);
+      const [symbol, decimals, name] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...baseAssetContract,
+            functionName: "symbol",
+          },
+          {
+            ...baseAssetContract,
+            functionName: "decimals",
+          },
+          {
+            ...baseAssetContract,
+            functionName: "name",
+          },
+        ],
+      });
 
       const newBaseAsset: BaseAsset = {
         address: address,
         symbol: symbol,
         name: name,
-        decimals: parseInt(decimals),
+        decimals: parseInt(decimals.toString()),
         logoURI: null,
         local: true,
         balance: null,
@@ -962,14 +1446,14 @@ class Store {
       };
 
       if (getBalance) {
-        const account = stores.accountStore.getStore("account");
+        const account = getAccount().address;
         if (account) {
-          const balanceOf = await baseAssetContract.methods
-            .balanceOf(account.address)
-            .call();
-          newBaseAsset.balance = BigNumber(balanceOf)
-            .div(10 ** newBaseAsset.decimals)
-            .toFixed(newBaseAsset.decimals);
+          const balanceOf = await viemClient.readContract({
+            ...baseAssetContract,
+            functionName: "balanceOf",
+            args: [account],
+          });
+          newBaseAsset.balance = formatUnits(balanceOf, newBaseAsset.decimals);
         }
       }
 
@@ -986,6 +1470,7 @@ class Store {
         const storeBaseAssets = [...baseAssets, newBaseAsset];
 
         this.setStore({ baseAssets: storeBaseAssets });
+        this.updateSwapAssets(storeBaseAssets);
         this.emitter.emit(ACTIONS.BASE_ASSETS_UPDATED, storeBaseAssets);
       }
 
@@ -998,16 +1483,15 @@ class Store {
   };
 
   // DISPATCHER FUNCTIONS
-  configure = async (payload) => {
+  configure = async () => {
     try {
       this.setStore({ govToken: this._getGovTokenBase() });
       this.setStore({ veToken: this._getVeTokenBase() });
       this.setStore({ baseAssets: await this._getBaseAssets() });
-      this.setStore({ routeAssets: await this._getRouteAssets() });
+      // this.setStore({ routeAssets: await this._getRouteAssets() }); // We dont need it because we use firebird router
       this.setStore({ pairs: await this._getPairs() });
       this.setStore({ swapAssets: this._getSwapAssets() });
       this.setStore({ updateDate: await stores.helper.getActivePeriod() });
-      this.setStore({ tvl: await stores.helper.getCurrentTvl() });
       this.setStore({
         circulatingSupply: await stores.helper.getCirculatingSupply(), // TODO move to api
       });
@@ -1056,15 +1540,7 @@ class Store {
 
   _getRouteAssets = async () => {
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API}/api/v1/configuration`,
-        {
-          method: "get",
-          headers: {
-            Authorization: `Basic ${process.env.NEXT_PUBLIC_API_TOKEN}`,
-          },
-        }
-      );
+      const response = await fetch(`/api/routes`);
       const routeAssetsCall = await response.json();
       return routeAssetsCall.data as RouteAsset[];
     } catch (ex) {
@@ -1075,23 +1551,15 @@ class Store {
 
   _getPairs = async () => {
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API}/api/v1/pairs`,
-        {
-          method: "get",
-          headers: {
-            Authorization: `Basic ${process.env.NEXT_PUBLIC_API_TOKEN}`,
-          },
-        }
-      );
+      const response = await fetch(`/api/pairs`);
+
       const pairsCall = await response.json();
-      const ignoredPairs = ["0xf9e9e9c918a90e126249095de0c8d6560d0b6535"]; // this pair from canto blockchain sneaked inside arbitrum api
-      const filteredPairs = pairsCall.data.filter((pair) => {
-        return !ignoredPairs.includes(pair.address);
-      });
-      return process.env.NEXT_PUBLIC_CHAINID !== "7700"
-        ? filteredPairs
-        : pairsCall.data;
+
+      this.setStore({ tokenPrices: new Map(pairsCall.prices) });
+      this.setStore({ tvl: pairsCall.tvl });
+      this.setStore({ tbv: pairsCall.tbv });
+
+      return pairsCall.data;
     } catch (ex) {
       console.log(ex);
       return [];
@@ -1112,8 +1580,7 @@ class Store {
     );
     return [...baseAssetsWeSwap];
   };
-  updateSwapAssets = () => {
-    const baseAssets = this.getStore("baseAssets");
+  updateSwapAssets = (payload: BaseAsset[]) => {
     const pairs = this.getStore("pairs");
     const set = new Set<string>();
     set.add(NATIVE_TOKEN.address.toLowerCase());
@@ -1121,7 +1588,7 @@ class Store {
       set.add(pair.token0.address.toLowerCase());
       set.add(pair.token1.address.toLowerCase());
     });
-    const baseAssetsWeSwap = baseAssets.filter((asset) =>
+    const baseAssetsWeSwap = payload.filter((asset) =>
       set.has(asset.address.toLowerCase())
     );
     this.setStore({ swapAssets: baseAssetsWeSwap });
@@ -1148,66 +1615,95 @@ class Store {
     };
   };
 
-  getBalances = async (payload) => {
+  getBalances = async () => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-
-      this._getGovTokenInfo(web3, account);
-      await this._getBaseAssetInfo(web3, account);
-      await this._getPairInfo(web3, account);
+      this._getGovTokenInfo(account);
+      await this._getBaseAssetInfo(account);
+      await this._getPairInfo(account);
     } catch (ex) {
       console.log(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _getVestNFTs = async (web3, account) => {
+  _getVestNFTs = async (address: `0x${string}`) => {
     try {
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
+      if (!veToken || !govToken) {
+        throw new Error("veToken or govToken not found");
+      }
 
-      const vestingContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI,
-        CONTRACTS.VE_TOKEN_ADDRESS
+      const vestingContract = {
+        abi: CONTRACTS.VE_TOKEN_ABI,
+        address: CONTRACTS.VE_TOKEN_ADDRESS,
+      } as const;
+
+      const nftsLength = await viemClient.readContract({
+        ...vestingContract,
+        functionName: "balanceOf",
+        args: [address],
+      });
+
+      const arr = Array.from(
+        { length: parseInt(nftsLength.toString()) },
+        (v, i) => i
       );
 
-      const nftsLength = await vestingContract.methods
-        .balanceOf(account.address)
-        .call();
-      const arr = Array.from({ length: parseInt(nftsLength) }, (v, i) => i);
-
-      const nfts = await Promise.all(
+      const nfts: VestNFT[] = await Promise.all(
         arr.map(async (idx) => {
-          const tokenIndex = await vestingContract.methods
-            .tokenOfOwnerByIndex(account.address, idx)
-            .call();
-          const locked = await vestingContract.methods
-            .locked(tokenIndex)
-            .call();
-          const lockValue = await vestingContract.methods
-            .balanceOfNFT(tokenIndex)
-            .call();
+          const tokenIndex = await viemClient.readContract({
+            ...vestingContract,
+            functionName: "tokenOfOwnerByIndex",
+            args: [address, BigInt(idx)],
+          });
+          const [[lockedAmount, lockedEnd], lockValue, voted, totalSupply] =
+            await viemClient.multicall({
+              allowFailure: false,
+              contracts: [
+                {
+                  ...vestingContract,
+                  functionName: "locked",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "balanceOfNFT",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "voted",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "totalSupply",
+                },
+              ],
+            });
+
+          const [actionedInCurrentEpoch, lastVoted] =
+            await this._checkNFTActionEpoch(tokenIndex.toString());
 
           // probably do some decimals math before returning info. Maybe get more info. I don't know what it returns.
           return {
-            id: tokenIndex,
-            lockEnds: locked.end,
-            lockAmount: BigNumber(locked.amount)
-              .div(10 ** govToken.decimals)
-              .toFixed(govToken.decimals),
-            lockValue: BigNumber(lockValue)
-              .div(10 ** veToken.decimals)
-              .toFixed(veToken.decimals),
+            id: tokenIndex.toString(),
+            lockEnds: lockedEnd.toString(),
+            lockAmount: formatUnits(lockedAmount, govToken.decimals),
+            lockValue: formatUnits(lockValue, veToken.decimals),
+            actionedInCurrentEpoch,
+            reset: actionedInCurrentEpoch && !voted,
+            lastVoted,
+            influence:
+              Number(formatUnits(lockValue, veToken.decimals)) /
+              Number(formatUnits(totalSupply, veToken.decimals)),
           };
         })
       );
@@ -1220,7 +1716,7 @@ class Store {
     }
   };
 
-  _getGovTokenInfo = async (web3, account) => {
+  _getGovTokenInfo = async (address: `0x${string}`) => {
     try {
       const govToken = this.getStore("govToken");
       if (!govToken) {
@@ -1228,33 +1724,27 @@ class Store {
         return null;
       }
 
-      const veTokenContract = new web3.eth.Contract(
-        CONTRACTS.GOV_TOKEN_ABI,
-        CONTRACTS.GOV_TOKEN_ADDRESS
-      );
+      const balanceOf = await viemClient.readContract({
+        abi: CONTRACTS.GOV_TOKEN_ABI,
+        address: CONTRACTS.GOV_TOKEN_ADDRESS,
+        functionName: "balanceOf",
+        args: [address],
+      });
 
-      const [balanceOf] = await Promise.all([
-        veTokenContract.methods.balanceOf(account.address).call(),
-      ]);
-
-      govToken.balanceOf = balanceOf;
-      govToken.balance = BigNumber(balanceOf)
-        .div(10 ** govToken.decimals)
-        .toFixed(govToken.decimals);
+      govToken.balanceOf = balanceOf.toString();
+      govToken.balance = formatUnits(balanceOf, govToken.decimals);
 
       this.setStore({ govToken });
       this.emitter.emit(ACTIONS.UPDATED);
 
-      this._getVestNFTs(web3, account);
+      this._getVestNFTs(address);
     } catch (ex) {
       console.log(ex);
     }
   };
 
-  _getPairInfo = async (web3, account, overridePairs?) => {
+  _getPairInfo = async (address: `0x${string}`, overridePairs?: Pair[]) => {
     try {
-      const multicall = await stores.accountStore.getMulticall();
-
       let pairs: Pair[] = [];
 
       if (overridePairs) {
@@ -1263,43 +1753,47 @@ class Store {
         pairs = this.getStore("pairs");
       }
 
-      const factoryContract = new web3.eth.Contract(
-        CONTRACTS.FACTORY_ABI,
-        CONTRACTS.FACTORY_ADDRESS
-      );
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI,
-        CONTRACTS.VOTER_ADDRESS
-      );
+      const gaugesContract = {
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+      } as const;
 
-      const [allPairsLength, totalWeight] = await Promise.all([
-        factoryContract.methods.allPairsLength().call(),
-        gaugesContract.methods.totalWeight().call(),
-      ]);
+      const totalWeight = await viemClient.readContract({
+        ...gaugesContract,
+        functionName: "totalWeight",
+      });
+
+      const pairCalls = pairs.flatMap((pair) => {
+        return [
+          {
+            address: pair.address,
+            abi: CONTRACTS.PAIR_ABI,
+            functionName: "totalSupply",
+          },
+          {
+            address: pair.address,
+            abi: CONTRACTS.PAIR_ABI,
+            functionName: "reserve0",
+          },
+          {
+            address: pair.address,
+            abi: CONTRACTS.PAIR_ABI,
+            functionName: "reserve1",
+          },
+          {
+            address: pair.address,
+            abi: CONTRACTS.PAIR_ABI,
+            functionName: "balanceOf",
+            args: [address],
+          },
+        ] as const;
+      });
+      const pairCallsChunks = chunkArray(pairCalls, 100);
+      const pairsData = await multicallChunks(pairCallsChunks);
 
       const ps = await Promise.all(
-        pairs.map(async (pair) => {
-          // this pair is broken
-          if (
-            pair.address.toLowerCase() ===
-            "0xA4Ed386124c023aCA6AA89b184F90e1375eE677c".toLowerCase()
-          ) {
-            pair.apr = 0;
-          }
+        pairs.map(async (pair, i) => {
           try {
-            const pairContract = new web3.eth.Contract(
-              CONTRACTS.PAIR_ABI,
-              pair.address
-            );
-            const token0Contract = new web3.eth.Contract(
-              CONTRACTS.ERC20_ABI,
-              pair.token0.address
-            );
-            const token1Contract = new web3.eth.Contract(
-              CONTRACTS.ERC20_ABI,
-              pair.token1.address
-            );
-
             const token0 = await this.getBaseAsset(
               pair.token0.address,
               false,
@@ -1311,35 +1805,15 @@ class Store {
               true
             );
 
-            const [totalSupply, reserves, balanceOf, claimable0, claimable1] =
-              await multicall.aggregate([
-                pairContract.methods.totalSupply(),
-                pairContract.methods.getReserves(),
-                pairContract.methods.balanceOf(account.address),
-                pairContract.methods.claimable0(account.address),
-                pairContract.methods.claimable1(account.address),
-              ]);
+            const [totalSupply, reserve0, reserve1, balanceOf] =
+              pairsData.slice(i * 4, i * 4 + 4);
 
             pair.token0 = token0 != null ? token0 : pair.token0;
             pair.token1 = token1 != null ? token1 : pair.token1;
-            pair.balance = BigNumber(balanceOf)
-              .div(10 ** pair.decimals)
-              .toFixed(pair.decimals);
-            pair.totalSupply = BigNumber(totalSupply)
-              .div(10 ** pair.decimals)
-              .toFixed(pair.decimals);
-            pair.reserve0 = BigNumber(reserves[0])
-              .div(10 ** pair.token0.decimals)
-              .toFixed(pair.token0.decimals);
-            pair.reserve1 = BigNumber(reserves[1])
-              .div(10 ** pair.token1.decimals)
-              .toFixed(pair.token1.decimals);
-            pair.claimable0 = BigNumber(claimable0)
-              .div(10 ** pair.token0.decimals)
-              .toFixed(pair.token0.decimals);
-            pair.claimable1 = BigNumber(claimable1)
-              .div(10 ** pair.token1.decimals)
-              .toFixed(pair.token1.decimals);
+            pair.balance = formatUnits(balanceOf, PAIR_DECIMALS);
+            pair.totalSupply = formatUnits(totalSupply, PAIR_DECIMALS);
+            pair.reserve0 = formatUnits(reserve0, pair.token0.decimals);
+            pair.reserve1 = formatUnits(reserve1, pair.token1.decimals);
 
             return pair;
           } catch (ex) {
@@ -1354,134 +1828,130 @@ class Store {
       this.setStore({ pairs: ps });
       this.emitter.emit(ACTIONS.UPDATED);
 
-      // TODO make api calculate valid token prices and send it pack to us so we can just assign it
-      const tokensPricesMap = new Map<string, RouteAsset>();
-      for (const pair of ps) {
-        if (pair.gauge?.bribes) {
-          for (const bribe of pair.gauge.bribes) {
-            if (bribe.token) {
-              tokensPricesMap.set(
-                bribe.token.address.toLowerCase(),
-                bribe.token
+      const gauges = ps.filter(hasGauge);
+
+      const gaugesAliveCalls = gauges.map((pair) => {
+        return {
+          ...gaugesContract,
+          functionName: "isAlive",
+          args: [pair.gauge.address],
+        } as const;
+      });
+      const gaugesAliveCallsChunks = chunkArray(gaugesAliveCalls);
+      const gaugesAliveData = await multicallChunks(gaugesAliveCallsChunks);
+
+      const gaugesCalls = gauges.flatMap((pair) => {
+        return [
+          {
+            address: pair.gauge.address,
+            abi: CONTRACTS.GAUGE_ABI,
+            functionName: "totalSupply",
+          },
+          {
+            address: pair.gauge.address,
+            abi: CONTRACTS.GAUGE_ABI,
+            functionName: "balanceOf",
+            args: [address],
+          },
+          {
+            ...gaugesContract,
+            functionName: "weights",
+            args: [pair.address],
+          },
+          {
+            address: pair.gauge.address,
+            abi: CONTRACTS.GAUGE_ABI,
+            functionName: "left",
+            args: [CONTRACTS.GOV_TOKEN_ADDRESS],
+          },
+          {
+            address: pair.gauge.address,
+            abi: CONTRACTS.GAUGE_ABI,
+            functionName: "left",
+            args: [CANTO_OPTION_TOKEN],
+          },
+        ] as const;
+      });
+      const gaugesCallsChunks = chunkArray(gaugesCalls);
+      const gaugesData = await multicallChunks(gaugesCallsChunks);
+
+      // this is to increment index only if pair hasGauge
+      let outerIndex = 0;
+      const ps1 = ps.map((pair) => {
+        try {
+          if (hasGauge(pair)) {
+            const isAliveGauge = gaugesAliveData[outerIndex];
+
+            const [
+              totalSupply,
+              gaugeBalance,
+              gaugeWeight,
+              flowLeft,
+              optionLeft,
+            ] = gaugesData.slice(outerIndex * 5, outerIndex * 5 + 5);
+
+            const bribes = pair.gauge.bribes.map((bribe) => {
+              bribe.rewardAmount = 0;
+              return bribe;
+            });
+            pair.gauge.xx_bribes.forEach((xx_bribe) => {
+              const bribe = bribes.find(
+                (b) => b.token.address === xx_bribe.token.address
               );
-            }
-          }
-        }
-      }
-
-      // TODO understand api token prices
-      // stores.helper.setTokenPricesMap(tokensPricesMap);
-      await Promise.all(
-        [...tokensPricesMap.values()].map(
-          async (token) => await stores.helper.updateTokenPrice(token)
-        )
-      );
-
-      const ps1 = await Promise.all(
-        ps.map(async (pair) => {
-          try {
-            if (pair.gauge && pair.gauge.address !== ZERO_ADDRESS) {
-              const gaugeContract = new web3.eth.Contract(
-                CONTRACTS.GAUGE_ABI,
-                pair.gauge.address
-              );
-
-              const [totalSupply, gaugeBalance, gaugeWeight] =
-                await multicall.aggregate([
-                  gaugeContract.methods.totalSupply(),
-                  gaugeContract.methods.balanceOf(account.address),
-                  gaugesContract.methods.weights(pair.address),
-                ]);
-
-              // const bribeContract = new web3.eth.Contract(
-              //   CONTRACTS.BRIBE_ABI,
-              //   pair.gauge.bribeAddress
-              // );
-
-              // const bribes = await Promise.all(
-              //   pair.gauge.bribes.map(async (bribe, idx) => {
-              //     const rewardRate = await bribeContract.methods
-              //       .rewardRate(bribe.token.address)
-              //       .call();
-
-              //     --------- can't get past this line setting reward amount to reward amount from python api
-              //     bribe.rewardRate = BigNumber(rewardRate)
-              //       .div(10 ** bribe.token.decimals)
-              //       .toFixed(bribe.token.decimals);
-              //     bribe.rewardAmount = bribe.rewardAmmount;
-
-              //     return bribe;
-              //   })
-              // );
-
-              const bribes = pair.gauge.bribes.map((bribe) => {
-                bribe.rewardAmount = bribe.rewardAmmount;
-                bribe.tokenPrice = stores.helper.getTokenPricesMap.get(
-                  bribe.token.address.toLowerCase()
-                );
-                return bribe;
-              });
-
-              let votingApr = 0;
-              const votes = BigNumber(gaugeWeight)
-                .div(10 ** 18)
-                .toNumber();
-              const totalUSDValueOfBribes = bribes.reduce((acc, bribe) => {
-                return acc + bribe.tokenPrice * bribe.rewardAmount;
-              }, 0);
-              if (totalUSDValueOfBribes > 0) {
-                const perVote = totalUSDValueOfBribes / votes;
-                const perVotePerYear = perVote * 52.179;
-                const token = this.getStore("routeAssets").filter(
-                  (asset) => asset.symbol === "FLOW"
-                )[0];
-                const flowPrice = stores.helper.getTokenPricesMap.get(
-                  token.address.toLowerCase()
-                );
-
-                votingApr = votes > 0 ? (perVotePerYear / flowPrice) * 100 : 0;
+              if (bribe) {
+                bribe.rewardAmount = xx_bribe.rewardAmmount;
+              } else {
+                bribes.push({
+                  token: xx_bribe.token,
+                  rewardAmount: xx_bribe.rewardAmmount,
+                  reward_ammount: xx_bribe.rewardAmmount,
+                  rewardAmmount: xx_bribe.rewardAmmount,
+                });
               }
+            });
 
-              pair.gauge.balance = BigNumber(gaugeBalance)
-                .div(10 ** 18)
-                .toFixed(18);
-              pair.gauge.totalSupply = BigNumber(totalSupply)
-                .div(10 ** 18)
-                .toFixed(18);
-              pair.gauge.reserve0 =
-                pair.totalSupply > 0
-                  ? BigNumber(pair.reserve0)
-                      .times(pair.gauge.totalSupply)
-                      .div(pair.totalSupply)
-                      .toFixed(pair.token0.decimals)
-                  : "0";
-              pair.gauge.reserve1 =
-                pair.totalSupply > 0
-                  ? BigNumber(pair.reserve1)
-                      .times(pair.gauge.totalSupply)
-                      .div(pair.totalSupply)
-                      .toFixed(pair.token1.decimals)
-                  : "0";
-              pair.gauge.weight = BigNumber(gaugeWeight)
-                .div(10 ** 18)
-                .toFixed(18);
-              pair.gauge.weightPercent = BigNumber(gaugeWeight)
-                .times(100)
-                .div(totalWeight)
-                .toFixed(2);
-              pair.gaugebribes = bribes;
-              pair.gauge.votingApr = votingApr;
-            }
+            pair.gauge.balance = formatEther(gaugeBalance);
+            pair.gauge.totalSupply = formatEther(totalSupply);
 
-            return pair;
-          } catch (ex) {
-            console.log("EXCEPTION 2");
-            console.log(pair);
-            console.log(ex);
-            return pair;
+            // in ps totalSupply for reassgined to string from number (api sends number)
+            pair.gauge.reserve0 =
+              parseFloat(pair.totalSupply as `${number}`) > 0
+                ? BigNumber(pair.reserve0)
+                    .times(pair.gauge.totalSupply)
+                    .div(pair.totalSupply)
+                    .toFixed(pair.token0.decimals)
+                : "0";
+            // in ps totalSupply for reassgined to string from number (api sends number)
+            pair.gauge.reserve1 =
+              parseFloat(pair.totalSupply as `${number}`) > 0
+                ? BigNumber(pair.reserve1)
+                    .times(pair.gauge.totalSupply)
+                    .div(pair.totalSupply)
+                    .toFixed(pair.token1.decimals)
+                : "0";
+            pair.gauge.weight = formatEther(gaugeWeight);
+            pair.gauge.weightPercent = (
+              (Number(gaugeWeight) * 100) /
+              Number(totalWeight)
+            ).toFixed(2);
+            // NOTE: this is being used in votes table to show aggregated bribes and x_bribes
+            pair.gaugebribes = bribes;
+            pair.isAliveGauge = isAliveGauge;
+            if (isAliveGauge === false) pair.apr = 0;
+            if (flowLeft === 0n) pair.apr = 0;
+            if (optionLeft === 0n) pair.oblotr_apr = 0;
+
+            outerIndex++;
           }
-        })
-      );
+
+          return pair;
+        } catch (ex) {
+          console.log("EXCEPTION 2");
+          console.log(pair);
+          console.log(ex);
+          return pair;
+        }
+      });
 
       this.setStore({ pairs: ps1 });
       this.emitter.emit(ACTIONS.UPDATED);
@@ -1490,7 +1960,7 @@ class Store {
     }
   };
 
-  _getBaseAssetInfo = async (web3, account) => {
+  _getBaseAssetInfo = async (address: `0x${string}`) => {
     try {
       const baseAssets = this.getStore("baseAssets");
       if (!baseAssets) {
@@ -1498,65 +1968,105 @@ class Store {
         return null;
       }
 
-      const voterContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI,
-        CONTRACTS.VOTER_ADDRESS
+      const voterContract = {
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+      } as const;
+
+      let baseAssetsWithBalances: BaseAsset[] = [];
+
+      const nativeToken = baseAssets.find(
+        (asset) => asset.address === NATIVE_TOKEN.symbol
       );
-
-      const baseAssetsBalances = await Promise.all(
-        baseAssets.map(async (asset) => {
-          try {
-            if (asset.address === NATIVE_TOKEN.symbol) {
-              let bal = await web3.eth.getBalance(account.address);
-              return {
-                balanceOf: bal,
-                isWhitelisted: true,
-              };
-            }
-
-            const assetContract = new web3.eth.Contract(
-              CONTRACTS.ERC20_ABI,
-              asset.address
-            );
-
-            const [isWhitelisted, balanceOf] = await Promise.all([
-              voterContract.methods.isWhitelisted(asset.address).call(),
-              assetContract.methods.balanceOf(account.address).call(),
-            ]);
-
-            return {
-              balanceOf,
-              isWhitelisted,
-            };
-          } catch (ex) {
-            console.log("EXCEPTION 3");
-            console.log(asset);
-            console.log(ex);
-            return {
-              balanceOf: "0",
-              isWhitelisted: false,
-            };
-          }
-        })
-      );
-
-      for (let i = 0; i < baseAssets.length; i++) {
-        baseAssets[i].balance = BigNumber(baseAssetsBalances[i].balanceOf)
-          .div(10 ** baseAssets[i].decimals)
-          .toFixed(baseAssets[i].decimals);
-        baseAssets[i].isWhitelisted = baseAssetsBalances[i].isWhitelisted;
+      if (nativeToken) {
+        const balance = await viemClient.getBalance({
+          address,
+        });
+        baseAssetsWithBalances.push({
+          ...nativeToken,
+          balance: formatUnits(balance, nativeToken.decimals),
+          isWhitelisted: true,
+        } as const);
       }
 
-      this.setStore({ baseAssets });
+      const baseAssetsWithoutNativeToken = baseAssets
+        .map((asset) => {
+          if (asset.address !== NATIVE_TOKEN.symbol) {
+            return asset;
+          }
+        })
+        .filter((asset): asset is BaseAsset => asset !== undefined);
+      if (baseAssetsWithoutNativeToken.length === 0) {
+        console.warn("error in base assets logic");
+        return null;
+      }
+
+      const baseAssetsWhitelistedCalls = baseAssetsWithoutNativeToken.map(
+        (asset) => {
+          return {
+            ...voterContract,
+            functionName: "isWhitelisted",
+            args: [asset.address],
+          } as const;
+        }
+      );
+
+      const baseAssetsBalancesCalls = baseAssetsWithoutNativeToken.map(
+        (asset) => {
+          return {
+            abi: CONTRACTS.ERC20_ABI,
+            address: asset.address,
+            functionName: "balanceOf",
+            args: [address],
+          } as const;
+        }
+      );
+
+      const whitelistedCallsChunks = chunkArray(baseAssetsWhitelistedCalls);
+      const baseAssetsWhitelistedResults = await multicallChunks(
+        whitelistedCallsChunks
+      );
+
+      const balancesCallsChunks = chunkArray(baseAssetsBalancesCalls);
+      const baseAssetsBalancesResults = await multicallChunks(
+        balancesCallsChunks
+      );
+
+      for (let i = 0; i < baseAssetsWithoutNativeToken.length; i++) {
+        baseAssetsWithBalances.push({
+          ...baseAssetsWithoutNativeToken[i],
+          balance: formatUnits(
+            baseAssetsBalancesResults[i],
+            baseAssetsWithoutNativeToken[i].decimals
+          ),
+          isWhitelisted: baseAssetsWhitelistedResults[i],
+        });
+      }
+      baseAssets.forEach((baseAsset) => {
+        const baseAssetWithBalance = baseAssetsWithBalances.find(
+          (baseAssetWithBalance) =>
+            baseAssetWithBalance.address === baseAsset.address
+        );
+        if (baseAssetWithBalance) {
+          baseAsset.balance = baseAssetWithBalance.balance;
+          baseAsset.isWhitelisted = baseAssetWithBalance.isWhitelisted;
+        }
+      });
+
+      this.setStore({ baseAssets: baseAssetsWithBalances });
+      this.updateSwapAssets(baseAssetsWithBalances);
       this.emitter.emit(ACTIONS.UPDATED);
     } catch (ex) {
       console.log(ex);
     }
   };
 
-  searchBaseAsset = async (payload) => {
+  searchBaseAsset = async (payload: {
+    type: string;
+    content: { address: `0x${string}` };
+  }) => {
     try {
-      let localBaseAssets = [];
+      let localBaseAssets: BaseAsset[] = [];
       const localBaseAssetsString = localStorage.getItem("stableSwap-assets");
 
       if (localBaseAssetsString && localBaseAssetsString !== "") {
@@ -1572,27 +2082,38 @@ class Store {
         this.emitter.emit(ACTIONS.ASSET_SEARCHED, theBaseAsset);
         return;
       }
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-      const baseAssetContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        payload.content.address
-      );
 
-      const [symbol, decimals, name] = await Promise.all([
-        baseAssetContract.methods.symbol().call(),
-        baseAssetContract.methods.decimals().call(),
-        baseAssetContract.methods.name().call(),
-      ]);
+      const baseAssetContract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: payload.content.address,
+      } as const;
 
-      const newBaseAsset = {
+      const [symbol, decimals, name] = await viemClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            ...baseAssetContract,
+            functionName: "symbol",
+          },
+          {
+            ...baseAssetContract,
+            functionName: "decimals",
+          },
+          {
+            ...baseAssetContract,
+            functionName: "name",
+          },
+        ],
+      });
+
+      const newBaseAsset: BaseAsset = {
         address: payload.content.address,
         symbol: symbol,
         name: name,
-        decimals: parseInt(decimals),
+        decimals: parseInt(decimals.toString()),
+        balance: null,
+        local: true,
+        logoURI: "",
       };
 
       localBaseAssets = [...localBaseAssets, newBaseAsset];
@@ -1613,19 +2134,30 @@ class Store {
     }
   };
 
-  createPairStake = async (payload) => {
+  createPairStake = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount0: string;
+      amount1: string;
+      isStable: boolean;
+      token: any; // any coz we are not using it
+      slippage: string;
+    };
+  }) => {
     try {
       const context = this;
 
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -1635,29 +2167,27 @@ class Store {
         amount0,
         amount1,
         isStable: stable,
-        token,
         slippage,
       } = payload.content;
 
       let toki0 = token0.address;
       let toki1 = token1.address;
       if (token0.address === NATIVE_TOKEN.symbol) {
-        toki0 = W_NATIVE_ADDRESS;
+        toki0 = W_NATIVE_ADDRESS as `0x${string}`;
       }
       if (token1.address === NATIVE_TOKEN.symbol) {
-        toki1 = W_NATIVE_ADDRESS;
+        toki1 = W_NATIVE_ADDRESS as `0x${string}`;
       }
 
-      const factoryContract = new web3.eth.Contract(
-        CONTRACTS.FACTORY_ABI as AbiItem[],
-        CONTRACTS.FACTORY_ADDRESS
-      );
-      const pairFor = await factoryContract.methods
-        .getPair(toki0, toki1, stable)
-        .call();
+      const pairFor = await viemClient.readContract({
+        abi: CONTRACTS.FACTORY_ABI,
+        address: CONTRACTS.FACTORY_ADDRESS,
+        functionName: "getPair",
+        args: [toki0, toki1, stable],
+      });
 
-      if (pairFor && pairFor != ZERO_ADDRESS) {
-        await context.updatePairsCall(web3, account);
+      if (pairFor && pairFor !== ZERO_ADDRESS) {
+        await context.updatePairsCall(account);
         this.emitter.emit(ACTIONS.ERROR, "Pair already exists");
         return null;
       }
@@ -1710,12 +2240,13 @@ class Store {
         ],
       });
 
-      let allowance0 = "0";
-      let allowance1 = "0";
+      let allowance0: string | null = "0";
+      let allowance1: string | null = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (token0.address !== NATIVE_TOKEN.symbol) {
-        allowance0 = await this._getDepositAllowance(web3, token0, account);
+        allowance0 = await this._getDepositAllowance(token0, account);
+        if (!allowance0) throw new Error("Couldnt get allowance");
         if (BigNumber(allowance0).lt(amount0)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance0TXID,
@@ -1738,7 +2269,8 @@ class Store {
       }
 
       if (token1.address !== NATIVE_TOKEN.symbol) {
-        allowance1 = await this._getDepositAllowance(web3, token1, account);
+        allowance1 = await this._getDepositAllowance(token1, account);
+        if (!allowance1) throw new Error("Couldnt get allowance");
         if (BigNumber(allowance1).lt(amount1)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance1TXID,
@@ -1760,74 +2292,24 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance0).lt(amount0)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token0.address
+        await this.writeApprove(
+          walletClient,
+          allowance0TXID,
+          token0.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance0TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
 
       if (BigNumber(allowance1).lt(amount1)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token1.address
+        await this.writeApprove(
+          walletClient,
+          allowance1TXID,
+          token1.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance1TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT DEPOSIT TRANSACTION
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
@@ -1847,227 +2329,120 @@ class Store {
         .times(10 ** token1.decimals)
         .toFixed(0);
 
-      let func = "addLiquidity";
-      let params = [
-        token0.address,
-        token1.address,
+      await this.writeAddLiquidity(
+        walletClient,
+        depositTXID,
+        token0,
+        token1,
         stable,
         sendAmount0,
         sendAmount1,
         sendAmount0Min,
         sendAmount1Min,
-        account.address,
-        deadline,
-      ];
-      let sendValue = null;
+        deadline
+      );
 
+      let tok0 = token0.address;
+      let tok1 = token1.address;
       if (token0.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token1.address,
-          stable,
-          sendAmount1,
-          sendAmount1Min,
-          sendAmount0Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount0;
+        tok0 = W_NATIVE_ADDRESS as `0x${string}`;
       }
       if (token1.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token0.address,
-          stable,
-          sendAmount0,
-          sendAmount0Min,
-          sendAmount1Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount1;
+        tok1 = W_NATIVE_ADDRESS as `0x${string}`;
       }
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-      this._callContractWait(
-        web3,
-        routerContract,
-        func,
-        params,
+      const _pairFor = await viemClient.readContract({
+        abi: CONTRACTS.FACTORY_ABI,
+        address: CONTRACTS.FACTORY_ADDRESS,
+        functionName: "getPair",
+        args: [tok0, tok1, stable],
+      });
+
+      // SUBMIT CREATE GAUGE TRANSACTION
+      await this.writeCreateGauge(walletClient, createGaugeTXID, _pairFor);
+
+      const gaugeAddress = await viemClient.readContract({
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+        functionName: "gauges",
+        args: [_pairFor],
+      });
+
+      const balanceOf = await viemClient.readContract({
+        abi: CONTRACTS.PAIR_ABI,
+        address: _pairFor,
+        functionName: "balanceOf",
+        args: [account],
+      });
+
+      const pair = (await this.getPairByAddress(_pairFor)) as Gauge | null; // this has to have gauge because it was created moment ago
+
+      const stakeAllowance = await this._getStakeAllowance(
+        pair,
         account,
-        gasPrice,
-        null,
-        null,
-        depositTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          // GET PAIR FOR NEWLY CREATED LIQUIDITY POOL
-          let tok0 = token0.address;
-          let tok1 = token1.address;
-          if (token0.address === NATIVE_TOKEN.symbol) {
-            tok0 = W_NATIVE_ADDRESS;
-          }
-          if (token1.address === NATIVE_TOKEN.symbol) {
-            tok1 = W_NATIVE_ADDRESS;
-          }
-          const pairFor = await factoryContract.methods
-            .getPair(tok0, tok1, stable)
-            .call();
-
-          // SUBMIT CREATE GAUGE TRANSACTION
-          const gaugesContract = new web3.eth.Contract(
-            CONTRACTS.VOTER_ABI as AbiItem[],
-            CONTRACTS.VOTER_ADDRESS
-          );
-          this._callContractWait(
-            web3,
-            gaugesContract,
-            "createGauge",
-            [pairFor],
-            account,
-            gasPrice,
-            null,
-            null,
-            createGaugeTXID,
-            async (err) => {
-              if (err) {
-                return this.emitter.emit(ACTIONS.ERROR, err);
-              }
-
-              const gaugeAddress = await gaugesContract.methods
-                .gauges(pairFor)
-                .call();
-
-              const pairContract = new web3.eth.Contract(
-                CONTRACTS.PAIR_ABI as AbiItem[],
-                pairFor
-              );
-              const gaugeContract = new web3.eth.Contract(
-                CONTRACTS.GAUGE_ABI as AbiItem[],
-                gaugeAddress
-              );
-
-              const balanceOf = await pairContract.methods
-                .balanceOf(account.address)
-                .call();
-
-              const pair = await this.getPairByAddress(pairFor);
-              const stakeAllowance = await this._getStakeAllowance(
-                web3,
-                pair,
-                account
-              );
-
-              if (
-                BigNumber(stakeAllowance).lt(
-                  BigNumber(balanceOf)
-                    .div(10 ** pair.decimals)
-                    .toFixed(pair.decimals)
-                )
-              ) {
-                this.emitter.emit(ACTIONS.TX_STATUS, {
-                  uuid: stakeAllowanceTXID,
-                  description: `Allow the router to spend your ${pair.symbol}`,
-                });
-              } else {
-                this.emitter.emit(ACTIONS.TX_STATUS, {
-                  uuid: stakeAllowanceTXID,
-                  description: `Allowance on ${pair.symbol} sufficient`,
-                  status: "DONE",
-                });
-              }
-
-              const allowanceCallsPromise = [];
-
-              if (
-                BigNumber(stakeAllowance).lt(
-                  BigNumber(balanceOf)
-                    .div(10 ** pair.decimals)
-                    .toFixed(pair.decimals)
-                )
-              ) {
-                const stakePromise = new Promise<void>((resolve, reject) => {
-                  context._callContractWait(
-                    web3,
-                    pairContract,
-                    "approve",
-                    [pair.gauge.address, MAX_UINT256],
-                    account,
-                    gasPrice,
-                    null,
-                    null,
-                    stakeAllowanceTXID,
-                    (err) => {
-                      if (err) {
-                        reject(err);
-                        return;
-                      }
-
-                      resolve();
-                    }
-                  );
-                });
-
-                allowanceCallsPromise.push(stakePromise);
-              }
-
-              const done = await Promise.all(allowanceCallsPromise);
-
-              let sendTok = "0";
-              if (token && token.id) {
-                sendTok = token.id;
-              }
-
-              this._callContractWait(
-                web3,
-                gaugeContract,
-                "deposit",
-                [balanceOf, sendTok],
-                account,
-                gasPrice,
-                null,
-                null,
-                stakeTXID,
-                async (err) => {
-                  if (err) {
-                    return this.emitter.emit(ACTIONS.ERROR, err);
-                  }
-
-                  await context.updatePairsCall(web3, account);
-
-                  this.emitter.emit(ACTIONS.PAIR_CREATED, pairFor);
-                }
-              );
-            }
-          );
-        },
-        sendValue
+        _pairFor
       );
+      if (!stakeAllowance) throw new Error("stakeAllowance is null");
+
+      if (BigNumber(stakeAllowance).lt(BigNumber(formatEther(balanceOf)))) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: stakeAllowanceTXID,
+          description: `Allow the router to spend your ${
+            pair?.symbol ?? "LP token"
+          }`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: stakeAllowanceTXID,
+          description: `Allowance on ${pair?.symbol ?? "LP token"} sufficient`,
+          status: "DONE",
+        });
+      }
+
+      if (BigNumber(stakeAllowance).lt(BigNumber(formatEther(balanceOf)))) {
+        await this.writeApprove(
+          walletClient,
+          stakeAllowanceTXID,
+          _pairFor,
+          gaugeAddress
+        );
+      }
+
+      await this.writeDeposit(walletClient, stakeTXID, gaugeAddress, balanceOf);
+
+      await context.updatePairsCall(account);
+
+      this.emitter.emit(ACTIONS.PAIR_CREATED, _pairFor);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  createPairDeposit = async (payload) => {
+  createPairDeposit = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount0: string;
+      amount1: string;
+      isStable: boolean;
+      token: any; // any coz we are not using it
+      slippage: string;
+    };
+  }) => {
     try {
       const context = this;
 
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -2083,22 +2458,21 @@ class Store {
       let toki0 = token0.address;
       let toki1 = token1.address;
       if (token0.address === NATIVE_TOKEN.symbol) {
-        toki0 = W_NATIVE_ADDRESS;
+        toki0 = W_NATIVE_ADDRESS as `0x${string}`;
       }
       if (token1.address === NATIVE_TOKEN.symbol) {
-        toki1 = W_NATIVE_ADDRESS;
+        toki1 = W_NATIVE_ADDRESS as `0x${string}`;
       }
 
-      const factoryContract = new web3.eth.Contract(
-        CONTRACTS.FACTORY_ABI as AbiItem[],
-        CONTRACTS.FACTORY_ADDRESS
-      );
-      const pairFor = await factoryContract.methods
-        .getPair(toki0, toki1, stable)
-        .call();
+      const pairFor = await viemClient.readContract({
+        abi: CONTRACTS.FACTORY_ABI,
+        address: CONTRACTS.FACTORY_ADDRESS,
+        functionName: "getPair",
+        args: [toki0, toki1, stable],
+      });
 
-      if (pairFor && pairFor != ZERO_ADDRESS) {
-        await context.updatePairsCall(web3, account);
+      if (pairFor && pairFor !== ZERO_ADDRESS) {
+        await context.updatePairsCall(account);
         this.emitter.emit(ACTIONS.ERROR, "Pair already exists");
         return null;
       }
@@ -2139,12 +2513,13 @@ class Store {
         ],
       });
 
-      let allowance0 = "0";
-      let allowance1 = "0";
+      let allowance0: string | null = "0";
+      let allowance1: string | null = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (token0.address !== NATIVE_TOKEN.symbol) {
-        allowance0 = await this._getDepositAllowance(web3, token0, account);
+        allowance0 = await this._getDepositAllowance(token0, account);
+        if (!allowance0) throw new Error("Error getting allowance0");
         if (BigNumber(allowance0).lt(amount0)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance0TXID,
@@ -2167,7 +2542,8 @@ class Store {
       }
 
       if (token1.address !== NATIVE_TOKEN.symbol) {
-        allowance1 = await this._getDepositAllowance(web3, token1, account);
+        allowance1 = await this._getDepositAllowance(token1, account);
+        if (!allowance1) throw new Error("couldnt get allowance");
         if (BigNumber(allowance1).lt(amount1)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance1TXID,
@@ -2189,74 +2565,24 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance0).lt(amount0)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token0.address
+        await this.writeApprove(
+          walletClient,
+          allowance0TXID,
+          token0.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance0TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
 
       if (BigNumber(allowance1).lt(amount1)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token1.address
+        await this.writeApprove(
+          walletClient,
+          allowance1TXID,
+          token1.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance1TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT DEPOSIT TRANSACTION
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
@@ -2276,134 +2602,61 @@ class Store {
         .times(10 ** token1.decimals)
         .toFixed(0);
 
-      let func = "addLiquidity";
-      let params = [
-        token0.address,
-        token1.address,
+      await this.writeAddLiquidity(
+        walletClient,
+        depositTXID,
+        token0,
+        token1,
         stable,
         sendAmount0,
         sendAmount1,
         sendAmount0Min,
         sendAmount1Min,
-        account.address,
-        deadline,
-      ];
-      let sendValue = null;
+        deadline
+      );
 
+      let tok0 = token0.address;
+      let tok1 = token1.address;
       if (token0.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token1.address,
-          stable,
-          sendAmount1,
-          sendAmount1Min,
-          sendAmount0Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount0;
+        tok0 = W_NATIVE_ADDRESS as `0x${string}`;
       }
       if (token1.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token0.address,
-          stable,
-          sendAmount0,
-          sendAmount0Min,
-          sendAmount1Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount1;
+        tok1 = W_NATIVE_ADDRESS as `0x${string}`;
       }
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-      this._callContractWait(
-        web3,
-        routerContract,
-        func,
-        params,
-        account,
-        gasPrice,
-        null,
-        null,
-        depositTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      const _pairFor = await viemClient.readContract({
+        abi: CONTRACTS.FACTORY_ABI,
+        address: CONTRACTS.FACTORY_ADDRESS,
+        functionName: "getPair",
+        args: [tok0, tok1, stable],
+      });
 
-          // GET PAIR FOR NEWLY CREATED LIQUIDITY POOL
-          let tok0 = token0.address;
-          let tok1 = token1.address;
-          if (token0.address === NATIVE_TOKEN.symbol) {
-            tok0 = W_NATIVE_ADDRESS;
-          }
-          if (token1.address === NATIVE_TOKEN.symbol) {
-            tok1 = W_NATIVE_ADDRESS;
-          }
-          const pairFor = await factoryContract.methods
-            .getPair(tok0, tok1, stable)
-            .call();
+      // SUBMIT CREATE GAUGE TRANSACTION
+      await this.writeCreateGauge(walletClient, createGaugeTXID, _pairFor);
 
-          // SUBMIT CREATE GAUGE TRANSACTION
-          const gaugesContract = new web3.eth.Contract(
-            CONTRACTS.VOTER_ABI as AbiItem[],
-            CONTRACTS.VOTER_ADDRESS
-          );
-          this._callContractWait(
-            web3,
-            gaugesContract,
-            "createGauge",
-            [pairFor],
-            account,
-            gasPrice,
-            null,
-            null,
-            createGaugeTXID,
-            async (err) => {
-              if (err) {
-                return this.emitter.emit(ACTIONS.ERROR, err);
-              }
+      await context.updatePairsCall(account);
 
-              await context.updatePairsCall(web3, account);
-
-              this.emitter.emit(ACTIONS.PAIR_CREATED, pairFor);
-            }
-          );
-        },
-        sendValue
-      );
+      this.emitter.emit(ACTIONS.PAIR_CREATED, _pairFor);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  updatePairsCall = async (web3, account) => {
+  updatePairsCall = async (address: `0x${string}`) => {
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API}/api/v1/updatePairs`,
-        {
-          method: "get",
-          headers: {
-            Authorization: `Basic ${process.env.NEXT_PUBLIC_API_TOKEN}`,
-          },
-        }
-      );
+      // update pairs is same endpoint in API. Pairs are updated in sync on backend
+      const response = await fetch(`/api/pairs`);
       const pairsCall = await response.json();
       this.setStore({ pairs: pairsCall.data });
 
-      await this._getPairInfo(web3, account, pairsCall.data);
+      await this._getPairInfo(address, pairsCall.data);
     } catch (ex) {
       console.log(ex);
     }
   };
 
-  sleep = (ms) => {
+  sleep = (ms: number) => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   };
 
@@ -2411,23 +2664,32 @@ class Store {
     return uuidv4();
   };
 
-  addLiquidity = async (payload) => {
+  addLiquidity = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount0: string;
+      amount1: string;
+      minLiquidity: any;
+      pair: Pair;
+      slippage: string;
+    };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("walletClient not found");
         return null;
       }
 
-      const { token0, token1, amount0, amount1, minLiquidity, pair, slippage } =
+      const { token0, token1, amount0, amount1, pair, slippage } =
         payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
@@ -2458,12 +2720,13 @@ class Store {
         ],
       });
 
-      let allowance0 = "0";
-      let allowance1 = "0";
+      let allowance0: string | null = "0";
+      let allowance1: string | null = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (token0.address !== NATIVE_TOKEN.symbol) {
-        allowance0 = await this._getDepositAllowance(web3, token0, account);
+        allowance0 = await this._getDepositAllowance(token0, account);
+        if (!allowance0) throw new Error("Error getting allowance");
         if (BigNumber(allowance0).lt(amount0)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance0TXID,
@@ -2486,7 +2749,8 @@ class Store {
       }
 
       if (token1.address !== NATIVE_TOKEN.symbol) {
-        allowance1 = await this._getDepositAllowance(web3, token1, account);
+        allowance1 = await this._getDepositAllowance(token1, account);
+        if (!allowance1) throw new Error("couldnt get allowance");
         if (BigNumber(allowance1).lt(amount1)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance1TXID,
@@ -2508,76 +2772,24 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance0).lt(amount0)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token0.address
+        await this.writeApprove(
+          walletClient,
+          allowance0TXID,
+          token0.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance0TXID,
-            (err) => {
-              if (err) {
-                console.log(err);
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
 
       if (BigNumber(allowance1).lt(amount1)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token1.address
+        await this.writeApprove(
+          walletClient,
+          allowance1TXID,
+          token1.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance1TXID,
-            (err) => {
-              if (err) {
-                console.log(err);
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT DEPOSIT TRANSACTION
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
@@ -2597,96 +2809,47 @@ class Store {
         .times(10 ** token1.decimals)
         .toFixed(0);
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-
-      let func = "addLiquidity";
-      let params = [
-        token0.address,
-        token1.address,
+      await this.writeAddLiquidity(
+        walletClient,
+        depositTXID,
+        token0,
+        token1,
         pair.stable,
         sendAmount0,
         sendAmount1,
         sendAmount0Min,
         sendAmount1Min,
-        account.address,
-        deadline,
-      ];
-      let sendValue = null;
-
-      if (token0.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token1.address,
-          pair.stable,
-          sendAmount1,
-          sendAmount1Min,
-          sendAmount0Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount0;
-      }
-      if (token1.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token0.address,
-          pair.stable,
-          sendAmount0,
-          sendAmount0Min,
-          sendAmount1Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount1;
-      }
-
-      this._callContractWait(
-        web3,
-        routerContract,
-        func,
-        params,
-        account,
-        gasPrice,
-        null,
-        null,
-        depositTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this._getPairInfo(web3, account);
-
-          this.emitter.emit(ACTIONS.LIQUIDITY_ADDED);
-        },
-        sendValue
+        deadline
       );
+
+      this._getPairInfo(account);
+      this._getSpecificAssetInfo(account, token0.address);
+      this._getSpecificAssetInfo(account, token1.address);
+      this.emitter.emit(ACTIONS.LIQUIDITY_ADDED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  stakeLiquidity = async (payload) => {
+  stakeLiquidity = async (payload: {
+    type: string;
+    content: { pair: Gauge; token: any };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const { pair, token } = payload.content;
+      const { pair } = payload.content;
 
       let stakeAllowanceTXID = this.getTXUUID();
       let stakeTXID = this.getTXUUID();
@@ -2709,23 +2872,17 @@ class Store {
         ],
       });
 
-      const stakeAllowance = await this._getStakeAllowance(web3, pair, account);
+      const stakeAllowance = await this._getStakeAllowance(pair, account);
+      if (!stakeAllowance) throw new Error("Error getting stake allowance");
 
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pair.address
-      );
-      const balanceOf = await pairContract.methods
-        .balanceOf(account.address)
-        .call();
+      const balanceOf = await viemClient.readContract({
+        abi: CONTRACTS.PAIR_ABI,
+        address: pair.address,
+        functionName: "balanceOf",
+        args: [account],
+      });
 
-      if (
-        BigNumber(stakeAllowance).lt(
-          BigNumber(balanceOf)
-            .div(10 ** pair.decimals)
-            .toFixed(pair.decimals)
-        )
-      ) {
+      if (BigNumber(stakeAllowance).lt(BigNumber(formatEther(balanceOf)))) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: stakeAllowanceTXID,
           description: `Allow the router to spend your ${pair.symbol}`,
@@ -2738,93 +2895,55 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      if (!pair.gauge?.address) throw new Error("Gauge address is undefined");
 
-      const allowanceCallsPromises = [];
-
-      if (
-        BigNumber(stakeAllowance).lt(
-          BigNumber(balanceOf)
-            .div(10 ** pair.decimals)
-            .toFixed(pair.decimals)
-        )
-      ) {
-        const stakePromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            pairContract,
-            "approve",
-            [pair.gauge.address, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            stakeAllowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(stakePromise);
+      if (BigNumber(stakeAllowance).lt(BigNumber(formatEther(balanceOf)))) {
+        await this.writeApprove(
+          walletClient,
+          stakeAllowanceTXID,
+          pair.address,
+          pair.gauge.address
+        );
       }
 
-      const done = await Promise.all(allowanceCallsPromises);
-
-      const gaugeContract = new web3.eth.Contract(
-        CONTRACTS.GAUGE_ABI as AbiItem[],
-        pair.gauge.address
-      );
-
-      let sendTok = "0";
-      if (token && token.id) {
-        sendTok = token.id;
-      }
-
-      this._callContractWait(
-        web3,
-        gaugeContract,
-        "deposit",
-        [balanceOf, sendTok],
-        account,
-        gasPrice,
-        null,
-        null,
+      await this.writeDeposit(
+        walletClient,
         stakeTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this._getPairInfo(web3, account);
-
-          this.emitter.emit(ACTIONS.LIQUIDITY_STAKED);
-        }
+        pair.gauge.address,
+        balanceOf
       );
+
+      this._getPairInfo(account);
+      this.emitter.emit(ACTIONS.LIQUIDITY_STAKED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  addLiquidityAndStake = async (payload) => {
+  addLiquidityAndStake = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount0: string;
+      amount1: string;
+      minLiquidity: string;
+      pair: Gauge;
+      token: any;
+      slippage: string;
+    };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -2835,7 +2954,7 @@ class Store {
         amount1,
         minLiquidity,
         pair,
-        token,
+
         slippage,
       } = payload.content;
 
@@ -2879,12 +2998,13 @@ class Store {
         ],
       });
 
-      let allowance0 = "0";
-      let allowance1 = "0";
+      let allowance0: string | null = "0";
+      let allowance1: string | null = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (token0.address !== NATIVE_TOKEN.symbol) {
-        allowance0 = await this._getDepositAllowance(web3, token0, account);
+        allowance0 = await this._getDepositAllowance(token0, account);
+        if (!allowance0) throw new Error();
         if (BigNumber(allowance0).lt(amount0)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance0TXID,
@@ -2907,7 +3027,8 @@ class Store {
       }
 
       if (token1.address !== NATIVE_TOKEN.symbol) {
-        allowance1 = await this._getDepositAllowance(web3, token1, account);
+        allowance1 = await this._getDepositAllowance(token1, account);
+        if (!allowance1) throw new Error("couldnt get allowance");
         if (BigNumber(allowance1).lt(amount1)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowance1TXID,
@@ -2929,7 +3050,8 @@ class Store {
         });
       }
 
-      const stakeAllowance = await this._getStakeAllowance(web3, pair, account);
+      const stakeAllowance = await this._getStakeAllowance(pair, account);
+      if (!stakeAllowance) throw new Error("Error getting stake allowance");
 
       if (BigNumber(stakeAllowance).lt(minLiquidity)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
@@ -2944,105 +3066,35 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance0).lt(amount0)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token0.address
+        await this.writeApprove(
+          walletClient,
+          allowance0TXID,
+          token0.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance0TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
 
       if (BigNumber(allowance1).lt(amount1)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          token1.address
+        await this.writeApprove(
+          walletClient,
+          allowance1TXID,
+          token1.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowance1TXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
+
+      if (!pair.gauge?.address) throw new Error("Gauge address is undefined");
 
       if (BigNumber(stakeAllowance).lt(minLiquidity)) {
-        const pairContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          pair.address
+        await this.writeApprove(
+          walletClient,
+          stakeAllowanceTXID,
+          pair.address,
+          pair.gauge.address
         );
-
-        const stakePromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            pairContract,
-            "approve",
-            [pair.gauge.address, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            stakeAllowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(stakePromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT DEPOSIT TRANSACTION
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
@@ -3062,178 +3114,124 @@ class Store {
         .times(10 ** token1.decimals)
         .toFixed(0);
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-      const gaugeContract = new web3.eth.Contract(
-        CONTRACTS.GAUGE_ABI as AbiItem[],
-        pair.gauge.address
-      );
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pair.address
-      );
-
-      let func = "addLiquidity";
-      let params = [
-        token0.address,
-        token1.address,
+      await this.writeAddLiquidity(
+        walletClient,
+        depositTXID,
+        token0,
+        token1,
         pair.stable,
         sendAmount0,
         sendAmount1,
         sendAmount0Min,
         sendAmount1Min,
-        account.address,
-        deadline,
-      ];
-      let sendValue = null;
-
-      if (token0.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token1.address,
-          pair.stable,
-          sendAmount1,
-          sendAmount1Min,
-          sendAmount0Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount0;
-      }
-      if (token1.address === NATIVE_TOKEN.symbol) {
-        func = "addLiquidityETH";
-        params = [
-          token0.address,
-          pair.stable,
-          sendAmount0,
-          sendAmount0Min,
-          sendAmount1Min,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendAmount1;
-      }
-
-      this._callContractWait(
-        web3,
-        routerContract,
-        func,
-        params,
-        account,
-        gasPrice,
-        null,
-        null,
-        depositTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          const balanceOf = await pairContract.methods
-            .balanceOf(account.address)
-            .call();
-
-          let sendTok = "0";
-          if (token && token.id) {
-            sendTok = token.id;
-          }
-
-          this._callContractWait(
-            web3,
-            gaugeContract,
-            "deposit",
-            [balanceOf, sendTok],
-            account,
-            gasPrice,
-            null,
-            null,
-            stakeTXID,
-            (err) => {
-              if (err) {
-                return this.emitter.emit(ACTIONS.ERROR, err);
-              }
-
-              this._getPairInfo(web3, account);
-
-              this.emitter.emit(ACTIONS.ADD_LIQUIDITY_AND_STAKED);
-            }
-          );
-        },
-        sendValue
+        deadline
       );
+
+      const balanceOf = await viemClient.readContract({
+        abi: CONTRACTS.PAIR_ABI,
+        address: pair.address,
+        functionName: "balanceOf",
+        args: [account],
+      });
+
+      await this.writeDeposit(
+        walletClient,
+        stakeTXID,
+        pair.gauge.address,
+        balanceOf
+      );
+
+      this._getPairInfo(account);
+      this._getSpecificAssetInfo(account, token0.address);
+      this._getSpecificAssetInfo(account, token1.address);
+      this.emitter.emit(ACTIONS.ADD_LIQUIDITY_AND_STAKED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _getDepositAllowance = async (web3, token, account) => {
+  _getDepositAllowance = async (token: BaseAsset, address: `0x${string}`) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        token.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, CONTRACTS.ROUTER_ADDRESS)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** token.decimals)
-        .toFixed(token.decimals);
+      const allowance = await viemClient.readContract({
+        address: token.address,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        args: [address, CONTRACTS.ROUTER_ADDRESS],
+      });
+
+      return formatUnits(allowance, token.decimals);
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  _getStakeAllowance = async (web3, pair, account) => {
+  _getStakeAllowance = async (
+    pair: Gauge | null,
+    address: `0x${string}`,
+    pairAddress?: `0x${string}`
+  ) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        pair.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, pair.gauge.address)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** pair.decimals)
-        .toFixed(pair.decimals);
+      if (pair === null && !!pairAddress) {
+        const tokenContract = {
+          abi: CONTRACTS.ERC20_ABI,
+          address: pairAddress,
+        } as const;
+        const allowance = await viemClient.readContract({
+          ...tokenContract,
+          functionName: "allowance",
+          args: [address, pairAddress],
+        });
+        return formatUnits(allowance, PAIR_DECIMALS);
+      } else if (pair !== null) {
+        const tokenContract = {
+          abi: CONTRACTS.ERC20_ABI,
+          address: pair.address,
+        } as const;
+        const allowance = await viemClient.readContract({
+          ...tokenContract,
+          functionName: "allowance",
+          args: [address, pair.gauge.address],
+        });
+        return formatUnits(allowance, PAIR_DECIMALS);
+      }
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  _getWithdrawAllowance = async (web3, pair, account) => {
+  _getWithdrawAllowance = async (pair: Pair, address: `0x${string}`) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        pair.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, CONTRACTS.ROUTER_ADDRESS)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** pair.decimals)
-        .toFixed(pair.decimals);
+      const allowance = await viemClient.readContract({
+        address: pair.address,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        args: [address, CONTRACTS.ROUTER_ADDRESS],
+      });
+
+      return formatUnits(allowance, PAIR_DECIMALS);
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  quoteAddLiquidity = async (payload) => {
+  quoteAddLiquidity = async (payload: {
+    type: string;
+    content: {
+      pair: Pair;
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount0: `${number}` | "";
+      amount1: `${number}` | "";
+    };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
         return null;
       }
 
@@ -3243,32 +3241,25 @@ class Store {
         return null;
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-
-      const sendAmount0 = BigNumber(amount0)
-        .times(10 ** token0.decimals)
-        .toFixed(0);
-      const sendAmount1 = BigNumber(amount1)
-        .times(10 ** token1.decimals)
-        .toFixed(0);
+      const sendAmount0 = parseUnits(amount0, token0.decimals);
+      const sendAmount1 = parseUnits(amount1, token1.decimals);
 
       let addy0 = token0.address;
       let addy1 = token1.address;
 
       if (token0.address === NATIVE_TOKEN.symbol) {
-        addy0 = W_NATIVE_ADDRESS;
+        addy0 = W_NATIVE_ADDRESS as `0x${string}`;
       }
       if (token1.address === NATIVE_TOKEN.symbol) {
-        addy1 = W_NATIVE_ADDRESS;
+        addy1 = W_NATIVE_ADDRESS as `0x${string}`;
       }
 
-      const res = await routerContract.methods
-        .quoteAddLiquidity(addy0, addy1, pair.stable, sendAmount0, sendAmount1)
-        .call();
+      const [, liquidity] = await viemClient.readContract({
+        address: CONTRACTS.ROUTER_ADDRESS,
+        abi: CONTRACTS.ROUTER_ABI,
+        functionName: "quoteAddLiquidity",
+        args: [addy0, addy1, pair.stable, sendAmount0, sendAmount1],
+      });
 
       const returnVal = {
         inputs: {
@@ -3277,9 +3268,7 @@ class Store {
           amount0,
           amount1,
         },
-        output: BigNumber(res.liquidity)
-          .div(10 ** pair.decimals)
-          .toFixed(pair.decimals),
+        output: formatUnits(liquidity, PAIR_DECIMALS),
       };
       this.emitter.emit(ACTIONS.QUOTE_ADD_LIQUIDITY_RETURNED, returnVal);
     } catch (ex) {
@@ -3288,17 +3277,14 @@ class Store {
     }
   };
 
-  getLiquidityBalances = async (payload) => {
+  getLiquidityBalances = async (payload: {
+    type: string;
+    content: { pair: Pair };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
         return null;
       }
 
@@ -3308,63 +3294,67 @@ class Store {
         return;
       }
 
-      const token0Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        pair.token0.address
-      );
-      const token1Contract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        pair.token1.address
-      );
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI as AbiItem[],
-        pair.address
-      );
+      const token0Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: pair.token0.address,
+      } as const;
+      const token1Contract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: pair.token1.address,
+      } as const;
+      const pairContract = {
+        abi: CONTRACTS.ERC20_ABI,
+        address: pair.address,
+      } as const;
 
       const balanceCalls = [
-        token0Contract.methods.balanceOf(account.address).call(),
-        token1Contract.methods.balanceOf(account.address).call(),
-        pairContract.methods.balanceOf(account.address).call(),
-      ];
+        {
+          ...token0Contract,
+          functionName: "balanceOf",
+          args: [account],
+        },
+        {
+          ...token1Contract,
+          functionName: "balanceOf",
+          args: [account],
+        },
+        {
+          ...pairContract,
+          functionName: "balanceOf",
+          args: [account],
+        },
+      ] as const;
 
-      if (pair.gauge) {
-        const gaugeContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          pair.gauge.address
-        );
-        balanceCalls.push(
-          gaugeContract.methods.balanceOf(account.address).call()
-        );
-        // balanceCalls.push(gaugeContract.methods.earned(incentiveAddress, account.address).call())
-      }
+      const [token0Balance, token1Balance, poolBalance] =
+        await viemClient.multicall({
+          allowFailure: false,
+          contracts: balanceCalls,
+        });
 
-      const [
-        token0Balance,
-        token1Balance,
-        poolBalance,
-        gaugeBalance /*, earned*/,
-      ] = await Promise.all(balanceCalls);
-
-      const returnVal = {
-        token0: BigNumber(token0Balance)
-          .div(10 ** pair.token0.decimals)
-          .toFixed(pair.token0.decimals),
-        token1: BigNumber(token1Balance)
-          .div(10 ** pair.token1.decimals)
-          .toFixed(pair.token1.decimals),
-        pool: BigNumber(poolBalance)
-          .div(10 ** 18)
-          .toFixed(18),
+      const returnVal: {
+        token0: string;
+        token1: string;
+        pool: string;
+        gauge: string | null;
+      } = {
+        token0: formatUnits(token0Balance, pair.token0.decimals),
+        token1: formatUnits(token1Balance, pair.token1.decimals),
+        pool: formatEther(poolBalance),
         gauge: null,
       };
 
+      let gaugeBalance;
       if (pair.gauge) {
-        returnVal.gauge = gaugeBalance
-          ? BigNumber(gaugeBalance)
-              .div(10 ** 18)
-              .toFixed(18)
-          : null;
-        // returnVal.earned = BigNumber(earned).div(10**incentiveAsset.decimals).toFixed(incentiveAsset.decimals),
+        gaugeBalance = await viemClient.readContract({
+          address: pair.gauge.address,
+          abi: CONTRACTS.ERC20_ABI,
+          functionName: "balanceOf",
+          args: [account],
+        });
+      }
+
+      if (pair.gauge) {
+        returnVal.gauge = gaugeBalance ? formatEther(gaugeBalance) : null;
       }
 
       this.emitter.emit(ACTIONS.GET_LIQUIDITY_BALANCES_RETURNED, returnVal);
@@ -3374,19 +3364,25 @@ class Store {
     }
   };
 
-  removeLiquidity = async (payload) => {
+  removeLiquidity = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      pair: Pair;
+      slippage: string;
+    };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -3415,8 +3411,9 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
-      const allowance = await this._getWithdrawAllowance(web3, pair, account);
-
+      const allowance = await this._getWithdrawAllowance(pair, account);
+      if (!allowance) throw new Error("Error getting withdraw allowance");
+      if (!pair.balance) throw new Error("No pair balance");
       if (BigNumber(allowance).lt(pair.balance)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: allowanceTXID,
@@ -3430,121 +3427,81 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(pair.balance)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          pair.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          pair.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                console.log(err);
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT WITHDRAW TRANSACTION
       const sendAmount = BigNumber(pair.balance)
-        .times(10 ** pair.decimals)
+        .times(10 ** PAIR_DECIMALS)
         .toFixed(0);
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-
-      const quoteRemove = await routerContract.methods
-        .quoteRemoveLiquidity(
-          token0.address,
-          token1.address,
-          pair.stable,
-          sendAmount
-        )
-        .call();
+      const [amountA, amountB] = await viemClient.readContract({
+        address: CONTRACTS.ROUTER_ADDRESS,
+        abi: CONTRACTS.ROUTER_ABI,
+        functionName: "quoteRemoveLiquidity",
+        args: [token0.address, token1.address, pair.stable, BigInt(sendAmount)],
+      });
 
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
       const deadline = "" + moment().add(600, "seconds").unix();
-      const sendAmount0Min = BigNumber(quoteRemove.amountA)
+      const sendAmount0Min = BigNumber(amountA.toString())
         .times(sendSlippage)
         .toFixed(0);
-      const sendAmount1Min = BigNumber(quoteRemove.amountB)
+      const sendAmount1Min = BigNumber(amountB.toString())
         .times(sendSlippage)
         .toFixed(0);
 
-      this._callContractWait(
-        web3,
-        routerContract,
-        "removeLiquidity",
-        [
-          token0.address,
-          token1.address,
-          pair.stable,
-          sendAmount,
-          sendAmount0Min,
-          sendAmount1Min,
-          account.address,
-          deadline,
-        ],
-        account,
-        gasPrice,
-        null,
-        null,
+      await this.writeRemoveLiquidty(
+        walletClient,
         withdrawTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this._getPairInfo(web3, account);
-
-          this.emitter.emit(ACTIONS.LIQUIDITY_REMOVED);
-        }
+        token0.address,
+        token1.address,
+        pair.stable,
+        BigInt(sendAmount),
+        sendAmount0Min,
+        sendAmount1Min,
+        deadline
       );
+
+      this._getPairInfo(account);
+      this._getSpecificAssetInfo(account, token0.address);
+      this._getSpecificAssetInfo(account, token1.address);
+      this.emitter.emit(ACTIONS.LIQUIDITY_REMOVED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  unstakeAndRemoveLiquidity = async (payload) => {
+  unstakeAndRemoveLiquidity = async (payload: {
+    type: string;
+    content: {
+      token0: BaseAsset;
+      token1: BaseAsset;
+      amount: string;
+      amount0: string;
+      amount1: string;
+      pair: Gauge;
+      slippage: string;
+    };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -3580,7 +3537,8 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
-      const allowance = await this._getWithdrawAllowance(web3, pair, account);
+      const allowance = await this._getWithdrawAllowance(pair, account);
+      if (!allowance) throw new Error("Error getting withdraw allowance");
 
       if (BigNumber(allowance).lt(amount)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
@@ -3595,48 +3553,20 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(amount)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          pair.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          pair.address,
+          CONTRACTS.ROUTER_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT DEPOSIT TRANSACTION
       const sendSlippage = BigNumber(100).minus(slippage).div(100);
       const sendAmount = BigNumber(amount)
-        .times(10 ** pair.decimals)
+        .times(10 ** PAIR_DECIMALS)
         .toFixed(0);
       const deadline = "" + moment().add(600, "seconds").unix();
       const sendAmount0Min = BigNumber(amount0)
@@ -3648,93 +3578,67 @@ class Store {
         .times(10 ** token1.decimals)
         .toFixed(0);
 
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
+      const withdrawFunction = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: pair.gauge?.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "withdraw",
+          args: [BigInt(sendAmount)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+
+      await this._writeContractWrapper(unstakeTXID, withdrawFunction);
+
+      const balanceOf = await viemClient.readContract({
+        abi: CONTRACTS.PAIR_ABI,
+        address: pair.address,
+        functionName: "balanceOf",
+        args: [account],
+      });
+
+      await this.writeRemoveLiquidty(
+        walletClient,
+        withdrawTXID,
+        token0.address,
+        token1.address,
+        pair.stable,
+        balanceOf,
+        sendAmount0Min,
+        sendAmount1Min,
+        deadline
       );
-      const gaugeContract = new web3.eth.Contract(
-        CONTRACTS.GAUGE_ABI as AbiItem[],
-        pair.gauge.address
-      );
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pair.address
-      );
 
-      this._callContractWait(
-        web3,
-        gaugeContract,
-        "withdraw",
-        [sendAmount],
-        account,
-        gasPrice,
-        null,
-        null,
-        unstakeTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          const balanceOf = await pairContract.methods
-            .balanceOf(account.address)
-            .call();
-
-          this._callContractWait(
-            web3,
-            routerContract,
-            "removeLiquidity",
-            [
-              token0.address,
-              token1.address,
-              pair.stable,
-              balanceOf,
-              sendAmount0Min,
-              sendAmount1Min,
-              account.address,
-              deadline,
-            ],
-            account,
-            gasPrice,
-            null,
-            null,
-            withdrawTXID,
-            (err) => {
-              if (err) {
-                return this.emitter.emit(ACTIONS.ERROR, err);
-              }
-
-              this._getPairInfo(web3, account);
-
-              this.emitter.emit(ACTIONS.REMOVE_LIQUIDITY_AND_UNSTAKED);
-            }
-          );
-        }
-      );
+      this._getPairInfo(account);
+      this._getSpecificAssetInfo(account, token0.address);
+      this._getSpecificAssetInfo(account, token1.address);
+      this.emitter.emit(ACTIONS.REMOVE_LIQUIDITY_AND_UNSTAKED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  unstakeLiquidity = async (payload) => {
+  unstakeLiquidity = async (payload: {
+    type: string;
+    content: { amount: string; pair: Gauge };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const { token0, token1, amount, amount0, amount1, pair } =
-        payload.content;
+      const { amount, pair } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let unstakeTXID = this.getTXUUID();
@@ -3752,55 +3656,46 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      // SUBMIT DEPOSIT TRANSACTION
+      // SUBMIT WITHDRAW TRANSACTION
       const sendAmount = BigNumber(amount)
-        .times(10 ** pair.decimals)
+        .times(10 ** PAIR_DECIMALS)
         .toFixed(0);
 
-      const gaugeContract = new web3.eth.Contract(
-        CONTRACTS.GAUGE_ABI as AbiItem[],
-        pair.gauge.address
-      );
+      const withdrawFunction = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: pair.gauge?.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "withdraw",
+          args: [BigInt(sendAmount)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-      this._callContractWait(
-        web3,
-        gaugeContract,
-        "withdraw",
-        [sendAmount],
-        account,
-        gasPrice,
-        null,
-        null,
-        unstakeTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      await this._writeContractWrapper(unstakeTXID, withdrawFunction);
 
-          this._getPairInfo(web3, account);
-
-          this.emitter.emit(ACTIONS.LIQUIDITY_UNSTAKED);
-        }
-      );
+      this._getPairInfo(account);
+      this.emitter.emit(ACTIONS.LIQUIDITY_UNSTAKED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  quoteRemoveLiquidity = async (payload) => {
+  quoteRemoveLiquidity = async (payload: {
+    type: string;
+    content: {
+      pair: Pair;
+      token0: BaseAsset;
+      token1: BaseAsset;
+      withdrawAmount: `${number}` | "";
+    };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
         return null;
       }
 
@@ -3810,24 +3705,18 @@ class Store {
         return null;
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
+      const routerContract = {
+        abi: CONTRACTS.ROUTER_ABI,
+        address: CONTRACTS.ROUTER_ADDRESS,
+      } as const;
 
-      const sendWithdrawAmount = BigNumber(withdrawAmount)
-        .times(10 ** pair.decimals)
-        .toFixed(0);
+      const sendWithdrawAmount = parseEther(withdrawAmount);
 
-      const res = await routerContract.methods
-        .quoteRemoveLiquidity(
-          token0.address,
-          token1.address,
-          pair.stable,
-          sendWithdrawAmount
-        )
-        .call();
+      const [amountA, amountB] = await viemClient.readContract({
+        ...routerContract,
+        functionName: "quoteRemoveLiquidity",
+        args: [token0.address, token1.address, pair.stable, sendWithdrawAmount],
+      });
 
       const returnVal = {
         inputs: {
@@ -3836,12 +3725,8 @@ class Store {
           withdrawAmount,
         },
         output: {
-          amount0: BigNumber(res.amountA)
-            .div(10 ** token0.decimals)
-            .toFixed(token0.decimals),
-          amount1: BigNumber(res.amountB)
-            .div(10 ** token1.decimals)
-            .toFixed(token1.decimals),
+          amount0: formatUnits(amountA, token0.decimals),
+          amount1: formatUnits(amountB, token1.decimals),
         },
       };
       this.emitter.emit(ACTIONS.QUOTE_REMOVE_LIQUIDITY_RETURNED, returnVal);
@@ -3851,19 +3736,17 @@ class Store {
     }
   };
 
-  createGauge = async (payload) => {
+  createGauge = async (payload: { type: string; content: { pair: Pair } }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -3885,324 +3768,39 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      await this.writeCreateGauge(walletClient, createGaugeTXID, pair.address);
 
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-      this._callContractWait(
-        web3,
-        gaugesContract,
-        "createGauge",
-        [pair.address],
-        account,
-        gasPrice,
-        null,
-        null,
-        createGaugeTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      await this.updatePairsCall(account);
 
-          await this.updatePairsCall(web3, account);
-
-          this.emitter.emit(ACTIONS.CREATE_GAUGE_RETURNED);
-        }
-      );
+      this.emitter.emit(ACTIONS.CREATE_GAUGE_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  quoteSwap = async (payload) => {
+  quoteSwap = async (payload: {
+    type: string;
+    content: {
+      fromAsset: BaseAsset;
+      toAsset: BaseAsset;
+      fromAmount: string;
+      slippage: number;
+    };
+  }) => {
+    const address = getAccount().address;
+    if (!address) throw new Error("no address");
     try {
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-
-      // route assets are USDC, WCANTO and FLOW
-      const routeAssets = this.getStore("routeAssets");
-      const { fromAsset, toAsset, fromAmount } = payload.content;
-
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-      const sendFromAmount = BigNumber(fromAmount)
-        .times(10 ** fromAsset.decimals)
-        .toFixed();
-
-      if (
-        !fromAsset ||
-        !toAsset ||
-        !fromAmount ||
-        !fromAsset.address ||
-        !toAsset.address ||
-        fromAmount === ""
-      ) {
-        return null;
-      }
-
-      let addy0 = fromAsset.address;
-      let addy1 = toAsset.address;
-
-      if (fromAsset.address === NATIVE_TOKEN.symbol) {
-        addy0 = W_NATIVE_ADDRESS;
-      }
-      if (toAsset.address === NATIVE_TOKEN.symbol) {
-        addy1 = W_NATIVE_ADDRESS;
-      }
-
-      const includesRouteAddress = routeAssets.filter((asset) => {
-        return (
-          asset.address.toLowerCase() == addy0.toLowerCase() ||
-          asset.address.toLowerCase() == addy1.toLowerCase()
-        );
+      const res = await fetch("/api/firebird-router", {
+        method: "POST",
+        body: JSON.stringify({
+          payload,
+          address,
+        }),
       });
+      const resJson = (await res.json()) as QuoteSwapResponse;
 
-      let amountOuts = [];
-      // FIXME we should have tryAggregate here so to filter not existing routes instead of this hardcore
-      if (includesRouteAddress.length === 0) {
-        amountOuts = routeAssets
-          .map((routeAsset) => {
-            if (routeAsset.symbol === "WCANTO") {
-              return [
-                // {
-                //   routes: [
-                //     {
-                //       from: addy0,
-                //       to: routeAsset.address,
-                //       stable: true,
-                //     },
-                //     {
-                //       from: routeAsset.address,
-                //       to: addy1,
-                //       stable: true,
-                //     },
-                //   ],
-                //   routeAsset: routeAsset,
-                // },
-                {
-                  routes: [
-                    {
-                      from: addy0,
-                      to: routeAsset.address,
-                      stable: false,
-                    },
-                    {
-                      from: routeAsset.address,
-                      to: addy1,
-                      stable: false,
-                    },
-                  ],
-                  routeAsset: routeAsset,
-                },
-                {
-                  routes: [
-                    {
-                      from: addy0,
-                      to: routeAsset.address,
-                      stable: true,
-                    },
-                    {
-                      from: routeAsset.address,
-                      to: addy1,
-                      stable: false,
-                    },
-                  ],
-                  routeAsset: routeAsset,
-                },
-                {
-                  routes: [
-                    {
-                      from: addy0,
-                      to: routeAsset.address,
-                      stable: false,
-                    },
-                    {
-                      from: routeAsset.address,
-                      to: addy1,
-                      stable: true,
-                    },
-                  ],
-                  routeAsset: routeAsset,
-                },
-              ];
-            }
-            return [
-              {
-                routes: [
-                  {
-                    from: addy0,
-                    to: routeAsset.address,
-                    stable: true,
-                  },
-                  {
-                    from: routeAsset.address,
-                    to: addy1,
-                    stable: true,
-                  },
-                ],
-                routeAsset: routeAsset,
-              },
-              {
-                routes: [
-                  {
-                    from: addy0,
-                    to: routeAsset.address,
-                    stable: false,
-                  },
-                  {
-                    from: routeAsset.address,
-                    to: addy1,
-                    stable: false,
-                  },
-                ],
-                routeAsset: routeAsset,
-              },
-              {
-                routes: [
-                  {
-                    from: addy0,
-                    to: routeAsset.address,
-                    stable: true,
-                  },
-                  {
-                    from: routeAsset.address,
-                    to: addy1,
-                    stable: false,
-                  },
-                ],
-                routeAsset: routeAsset,
-              },
-              {
-                routes: [
-                  {
-                    from: addy0,
-                    to: routeAsset.address,
-                    stable: false,
-                  },
-                  {
-                    from: routeAsset.address,
-                    to: addy1,
-                    stable: true,
-                  },
-                ],
-                routeAsset: routeAsset,
-              },
-            ];
-          })
-          .flat();
-      }
-
-      amountOuts.push({
-        routes: [
-          {
-            from: addy0,
-            to: addy1,
-            stable: true,
-          },
-        ],
-        routeAsset: null,
-      });
-
-      amountOuts.push({
-        routes: [
-          {
-            from: addy0,
-            to: addy1,
-            stable: false,
-          },
-        ],
-        routeAsset: null,
-      });
-
-      const multicall = await stores.accountStore.getMulticall();
-      const receiveAmounts = await multicall.aggregate(
-        amountOuts.map((route) => {
-          return routerContract.methods.getAmountsOut(
-            sendFromAmount,
-            route.routes
-          );
-        })
-      );
-
-      for (let i = 0; i < receiveAmounts.length; i++) {
-        amountOuts[i].receiveAmounts = receiveAmounts[i];
-        amountOuts[i].finalValue = BigNumber(
-          receiveAmounts[i][receiveAmounts[i].length - 1]
-        )
-          .div(10 ** toAsset.decimals)
-          .toFixed(toAsset.decimals);
-      }
-
-      const bestAmountOut = amountOuts
-        .filter((ret) => {
-          return ret != null;
-        })
-        .reduce((best, current) => {
-          if (!best) {
-            return current;
-          }
-          return BigNumber(best.finalValue).gt(current.finalValue)
-            ? best
-            : current;
-        }, 0);
-
-      if (!bestAmountOut) {
-        this.emitter.emit(
-          ACTIONS.ERROR,
-          "No valid route found to complete swap"
-        );
-        return null;
-      }
-
-      let totalRatio = "1";
-
-      for (let i = 0; i < bestAmountOut.routes.length; i++) {
-        if (bestAmountOut.routes[i].stable == true) {
-        } else {
-          const reserves = await routerContract.methods
-            .getReserves(
-              bestAmountOut.routes[i].from,
-              bestAmountOut.routes[i].to,
-              bestAmountOut.routes[i].stable
-            )
-            .call();
-          let amountIn = "0";
-          let amountOut = "0";
-          if (i == 0) {
-            amountIn = sendFromAmount;
-            amountOut = bestAmountOut.receiveAmounts[i + 1];
-          } else {
-            amountIn = bestAmountOut.receiveAmounts[i];
-            amountOut = bestAmountOut.receiveAmounts[i + 1];
-          }
-
-          const amIn = BigNumber(amountIn).div(reserves.reserveA);
-          const amOut = BigNumber(amountOut).div(reserves.reserveB);
-          const ratio = BigNumber(amOut).div(amIn);
-
-          totalRatio = BigNumber(totalRatio).times(ratio).toFixed(18);
-        }
-      }
-
-      const priceImpact = BigNumber(1).minus(totalRatio).times(100).toFixed(18);
-
-      const returnValue = {
-        inputs: {
-          fromAmount: fromAmount,
-          fromAsset: fromAsset,
-          toAsset: toAsset,
-        },
-        output: bestAmountOut,
-        priceImpact: priceImpact,
-      };
+      const returnValue = resJson;
 
       this.emitter.emit(ACTIONS.QUOTE_SWAP_RETURNED, returnValue);
     } catch (ex) {
@@ -4212,24 +3810,28 @@ class Store {
     }
   };
 
-  swap = async (payload) => {
+  swap = async (payload: {
+    type: string;
+    content: {
+      quote: QuoteSwapResponse;
+      fromAsset: BaseAsset;
+      toAsset: BaseAsset;
+    };
+  }) => {
     try {
-      const context = this;
-
-      const account = stores.accountStore.getStore("account");
-      if (!account) {
-        console.warn("account not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
+      const [account] = await walletClient.getAddresses();
 
-      const { fromAsset, toAsset, fromAmount, toAmount, quote, slippage } =
-        payload.content;
+      const { quote, fromAsset, toAsset } = payload.content;
+
+      const fromAmount = BigNumber(quote.maxReturn.totalFrom)
+        .div(10 ** fromAsset.decimals)
+        .toFixed(fromAsset.decimals);
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let allowanceTXID = this.getTXUUID();
@@ -4255,12 +3857,16 @@ class Store {
         ],
       });
 
-      let allowance = "0";
+      let allowance: string | null = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (fromAsset.address !== NATIVE_TOKEN.symbol) {
-        allowance = await this._getSwapAllowance(web3, fromAsset, account);
-
+        allowance = await this._getFirebirdSwapAllowance(
+          fromAsset,
+          account,
+          quote
+        );
+        if (!allowance) throw new Error("Couldn't fetch allowance");
         if (BigNumber(allowance).lt(fromAmount)) {
           this.emitter.emit(ACTIONS.TX_STATUS, {
             uuid: allowanceTXID,
@@ -4282,114 +3888,167 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
+      if (!allowance) throw new Error("Couldn't fetch allowance");
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(fromAmount)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          fromAsset.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          fromAsset.address,
+          quote.encodedData.router
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.ROUTER_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT SWAP TRANSACTION
-      const sendSlippage = BigNumber(100).minus(slippage).div(100);
-      const sendFromAmount = BigNumber(fromAmount)
-        .times(10 ** fromAsset.decimals)
-        .toFixed(0);
-      const sendMinAmountOut = BigNumber(quote.output.finalValue)
-        .times(10 ** toAsset.decimals)
-        .times(sendSlippage)
-        .toFixed(0);
-      const deadline = "" + moment().add(600, "seconds").unix();
-
-      const routerContract = new web3.eth.Contract(
-        CONTRACTS.ROUTER_ABI as AbiItem[],
-        CONTRACTS.ROUTER_ADDRESS
-      );
-
-      let func = "swapExactTokensForTokens";
-      let params = [
-        sendFromAmount,
-        sendMinAmountOut,
-        quote.output.routes,
-        account.address,
-        deadline,
-      ];
-      let sendValue = null;
-
-      if (fromAsset.address === NATIVE_TOKEN.symbol) {
-        func = "swapExactETHForTokens";
-        params = [
-          sendMinAmountOut,
-          quote.output.routes,
-          account.address,
-          deadline,
-        ];
-        sendValue = sendFromAmount;
-      }
-      if (toAsset.address === NATIVE_TOKEN.symbol) {
-        func = "swapExactTokensForETH";
-      }
-
-      this._callContractWait(
-        web3,
-        routerContract,
-        func,
-        params,
-        account,
-        gasPrice,
-        null,
-        null,
-        swapTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
+      if (
+        quote.maxReturn.from === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ) {
+        try {
+          this.emitter.emit(ACTIONS.TX_PENDING, { uuid: swapTXID });
+          const txHash = await walletClient.sendTransaction({
+            account,
+            to: quote.encodedData.router,
+            value: BigInt(quote.maxReturn.totalFrom),
+            data: quote.encodedData.data,
+            gasPrice: BigInt(quote.maxReturn.gasPrice),
+            chain: canto,
+          });
+          const receipt = await viemClient.waitForTransactionReceipt({
+            hash: txHash,
+          });
+          if (receipt.status === "success") {
+            this.emitter.emit(ACTIONS.TX_CONFIRMED, {
+              uuid: swapTXID,
+              txHash: receipt.transactionHash,
+            });
           }
+        } catch (error) {
+          if (!(error as Error).toString().includes("-32601")) {
+            if ((error as Error).message) {
+              this.emitter.emit(ACTIONS.TX_REJECTED, {
+                uuid: swapTXID,
+                error: this._mapError((error as Error).message),
+              });
+            }
+            this.emitter.emit(ACTIONS.TX_REJECTED, {
+              uuid: swapTXID,
+              error: error,
+            });
+          }
+        }
+      } else {
+        try {
+          this.emitter.emit(ACTIONS.TX_PENDING, { uuid: swapTXID });
+          const txHash = await walletClient.sendTransaction({
+            account,
+            to: quote.encodedData.router,
+            value: undefined,
+            data: quote.encodedData.data,
+            gasPrice: BigInt(quote.maxReturn.gasPrice),
+            chain: canto,
+          });
+          const receipt = await viemClient.waitForTransactionReceipt({
+            hash: txHash,
+          });
+          if (receipt.status === "success") {
+            this.emitter.emit(ACTIONS.TX_CONFIRMED, {
+              uuid: swapTXID,
+              txHash: receipt.transactionHash,
+            });
+          }
+        } catch (error) {
+          if (!(error as Error).toString().includes("-32601")) {
+            if ((error as Error).message) {
+              this.emitter.emit(ACTIONS.TX_REJECTED, {
+                uuid: swapTXID,
+                error: this._mapError((error as Error).message),
+              });
+            }
+            this.emitter.emit(ACTIONS.TX_REJECTED, {
+              uuid: swapTXID,
+              error: error,
+            });
+          }
+        }
+      }
 
-          this._getSpecificAssetInfo(web3, account, fromAsset.address);
-          this._getSpecificAssetInfo(web3, account, toAsset.address);
-          this._getPairInfo(web3, account);
+      this._getSpecificAssetInfo(account, fromAsset.address);
+      this._getSpecificAssetInfo(account, toAsset.address);
+      this._getPairInfo(account);
 
-          this.emitter.emit(ACTIONS.SWAP_RETURNED);
-        },
-        sendValue
-      );
+      this.emitter.emit(ACTIONS.SWAP_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _getSpecificAssetInfo = async (web3, account, assetAddress) => {
+  wrapOrUnwrap = async (payload: {
+    type: string;
+    content: { fromAsset: BaseAsset; toAsset: BaseAsset; fromAmount: string };
+  }) => {
+    try {
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+      const [account] = await walletClient.getAddresses();
+
+      const {
+        fromAsset: { address: fromAddress, symbol: fromSymbol },
+        toAsset: { address: toAddress, symbol: toSymbol },
+        fromAmount,
+      } = payload.content;
+      const isWrap = fromSymbol === "CANTO";
+      const action = isWrap ? "Wrap" : "Unwrap";
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      const wrapUnwrapTXID = this.getTXUUID();
+      const tx: ITransaction = {
+        title: `${action} ${fromSymbol} for ${toSymbol}`,
+        type: action,
+        verb: `${action} Successful`,
+        transactions: [
+          {
+            uuid: wrapUnwrapTXID,
+            description: `${action} ${formatCurrency(
+              fromAmount
+            )} ${fromSymbol} for ${toSymbol}`,
+            status: TransactionStatus.WAITING,
+          },
+        ],
+      };
+
+      this.emitter.emit(ACTIONS.TX_ADDED, tx);
+
+      // SUBMIT WRAP_UNWRAP TRANSACTION
+      const sendFromAmount = BigNumber(fromAmount)
+        .times(10 ** 18)
+        .toFixed(0);
+
+      await this.writeWrapUnwrap(
+        walletClient,
+        isWrap ? toAddress : fromAddress,
+        isWrap,
+        wrapUnwrapTXID,
+        sendFromAmount
+      );
+
+      this._getSpecificAssetInfo(account, fromAddress);
+      this._getSpecificAssetInfo(account, toAddress);
+
+      this.emitter.emit(ACTIONS.WRAP_UNWRAP_RETURNED);
+    } catch (ex) {
+      console.error(ex);
+      this.emitter.emit(ACTIONS.ERROR, ex);
+    }
+  };
+
+  _getSpecificAssetInfo = async (
+    address: `0x${string}`,
+    assetAddress: `0x${string}`
+  ) => {
     try {
       const baseAssets = this.getStore("baseAssets");
       if (!baseAssets) {
@@ -4401,23 +4060,19 @@ class Store {
         baseAssets.map(async (asset) => {
           if (asset.address.toLowerCase() === assetAddress.toLowerCase()) {
             if (asset.address === NATIVE_TOKEN.symbol) {
-              let bal = await web3.eth.getBalance(account.address);
-              asset.balance = BigNumber(bal)
-                .div(10 ** asset.decimals)
-                .toFixed(asset.decimals);
+              let bal = await viemClient.getBalance({
+                address,
+              });
+              asset.balance = formatUnits(bal, asset.decimals);
             } else {
-              const assetContract = new web3.eth.Contract(
-                CONTRACTS.ERC20_ABI,
-                asset.address
-              );
+              const balanceOf = await viemClient.readContract({
+                address: asset.address,
+                abi: CONTRACTS.ERC20_ABI,
+                functionName: "balanceOf",
+                args: [address],
+              });
 
-              const [balanceOf] = await Promise.all([
-                assetContract.methods.balanceOf(account.address).call(),
-              ]);
-
-              asset.balance = BigNumber(balanceOf)
-                .div(10 ** asset.decimals)
-                .toFixed(asset.decimals);
+              asset.balance = formatUnits(balanceOf, asset.decimals);
             }
           }
 
@@ -4426,6 +4081,7 @@ class Store {
       );
 
       this.setStore({ baseAssets: ba });
+      this.updateSwapAssets(ba);
       this.emitter.emit(ACTIONS.UPDATED);
     } catch (ex) {
       console.log(ex);
@@ -4433,73 +4089,124 @@ class Store {
     }
   };
 
-  _getSwapAllowance = async (web3, token, account) => {
+  _getFirebirdSwapAllowance = async (
+    token: BaseAsset,
+    address: `0x${string}`,
+    quote: QuoteSwapResponse
+  ) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        token.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, CONTRACTS.ROUTER_ADDRESS)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** token.decimals)
-        .toFixed(token.decimals);
+      const allowance = await viemClient.readContract({
+        address: token.address,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        args: [address, quote.encodedData.router],
+      });
+
+      return formatUnits(allowance, token.decimals);
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  getVestNFTs = async (payload) => {
+  // _getSwapAllowance = async (
+  //   token: BaseAsset,
+  //   account: { address: string }
+  // ) => {
+  //   try {
+  //     const allowance = await viemClient.readContract({
+  //       address: token.address ,
+  //       abi: CONTRACTS.ERC20_ABI,
+  //       functionName: "allowance",
+  //       args: [account , CONTRACTS.ROUTER_ADDRESS],
+  //     });
+
+  //     return formatUnits(allowance, token.decimals);
+  //   } catch (ex) {
+  //     console.error(ex);
+  //     return null;
+  //   }
+  // };
+
+  getVestNFTs = async () => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
+      if (!veToken || !govToken) {
+        throw new Error("veToken or govToken not found");
+      }
 
-      const vestingContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
+      const vestingContract = {
+        abi: CONTRACTS.VE_TOKEN_ABI,
+        address: CONTRACTS.VE_TOKEN_ADDRESS,
+      } as const;
+
+      const nftsLength = await viemClient.readContract({
+        ...vestingContract,
+        functionName: "balanceOf",
+        args: [account],
+      });
+
+      const arr = Array.from(
+        { length: parseInt(nftsLength.toString()) },
+        (v, i) => i
       );
-
-      const nftsLength = await vestingContract.methods
-        .balanceOf(account.address)
-        .call();
-      const arr = Array.from({ length: parseInt(nftsLength) }, (v, i) => i);
 
       const nfts = await Promise.all(
         arr.map(async (idx) => {
-          const tokenIndex = await vestingContract.methods
-            .tokenOfOwnerByIndex(account.address, idx)
-            .call();
-          const locked = await vestingContract.methods
-            .locked(tokenIndex)
-            .call();
-          const lockValue = await vestingContract.methods
-            .balanceOfNFT(tokenIndex)
-            .call();
+          const tokenIndex = await viemClient.readContract({
+            ...vestingContract,
+            functionName: "tokenOfOwnerByIndex",
+            args: [account, BigInt(idx)] as const,
+          });
+
+          const [[lockedAmount, lockedEnd], lockValue, voted, totalSupply] =
+            await viemClient.multicall({
+              allowFailure: false,
+              contracts: [
+                {
+                  ...vestingContract,
+                  functionName: "locked",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "balanceOfNFT",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "voted",
+                  args: [tokenIndex],
+                },
+                {
+                  ...vestingContract,
+                  functionName: "totalSupply",
+                },
+              ],
+            });
+
+          const [actionedInCurrentEpoch, lastVoted] =
+            await this._checkNFTActionEpoch(tokenIndex.toString());
 
           // probably do some decimals math before returning info. Maybe get more info. I don't know what it returns.
           return {
-            id: tokenIndex,
-            lockEnds: locked.end,
-            lockAmount: BigNumber(locked.amount)
-              .div(10 ** govToken.decimals)
-              .toFixed(govToken.decimals),
-            lockValue: BigNumber(lockValue)
-              .div(10 ** veToken.decimals)
-              .toFixed(veToken.decimals),
+            id: tokenIndex.toString(),
+            lockEnds: lockedEnd.toString(),
+            lockAmount: formatUnits(lockedAmount, govToken.decimals),
+            lockValue: formatUnits(lockValue, veToken.decimals),
+            actionedInCurrentEpoch,
+            reset: actionedInCurrentEpoch && !voted,
+            lastVoted,
+            influence:
+              Number(formatUnits(lockValue, veToken.decimals)) /
+              Number(formatUnits(totalSupply, veToken.decimals)),
           };
         })
       );
@@ -4512,21 +4219,25 @@ class Store {
     }
   };
 
-  createVest = async (payload) => {
+  createVest = async (payload: {
+    type: string;
+    content: { amount: string; unlockTime: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
       const govToken = this.getStore("govToken");
+      if (!govToken) throw new Error("No gov token");
       const { amount, unlockTime } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
@@ -4556,8 +4267,8 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
-      const allowance = await this._getVestAllowance(web3, govToken, account);
-
+      const allowance = await this._getVestAllowance(govToken, account);
+      if (!allowance) throw new Error("Error getting allowance in create vest");
       if (BigNumber(allowance).lt(amount)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: allowanceTXID,
@@ -4571,114 +4282,81 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(amount)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          govToken.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          govToken.address,
+          CONTRACTS.VE_TOKEN_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          this._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.VE_TOKEN_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT VEST TRANSACTION
       const sendAmount = BigNumber(amount)
         .times(10 ** govToken.decimals)
         .toFixed(0);
 
-      const veTokenContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
-      );
+      const writeCreateLock = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_TOKEN_ADDRESS,
+          abi: CONTRACTS.VE_TOKEN_ABI,
+          functionName: "create_lock",
+          args: [BigInt(sendAmount), BigInt(unlockTime)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-      this._callContractWait(
-        web3,
-        veTokenContract,
-        "create_lock",
-        [sendAmount, unlockTime + ""],
-        account,
-        gasPrice,
-        null,
-        null,
-        vestTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      await this._writeContractWrapper(vestTXID, writeCreateLock);
 
-          this._getGovTokenInfo(web3, account);
-          this.getNFTByID("fetchAll");
+      this._getGovTokenInfo(account);
+      this.getNFTByID("fetchAll");
 
-          this.emitter.emit(ACTIONS.CREATE_VEST_RETURNED);
-        }
-      );
+      this.emitter.emit(ACTIONS.CREATE_VEST_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _getVestAllowance = async (web3, token, account) => {
+  _getVestAllowance = async (token: GovToken, address: `0x${string}`) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        token.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, CONTRACTS.VE_TOKEN_ADDRESS)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** token.decimals)
-        .toFixed(token.decimals);
+      const allowance = await viemClient.readContract({
+        address: token.address,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        args: [address, CONTRACTS.VE_TOKEN_ADDRESS],
+      });
+
+      return formatUnits(allowance, token.decimals);
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  increaseVestAmount = async (payload) => {
+  increaseVestAmount = async (payload: {
+    type: string;
+    content: { amount: string; tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
       const govToken = this.getStore("govToken");
+      if (!govToken)
+        throw new Error("Error getting gov token in increase vest");
       const { amount, tokenID } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
@@ -4704,8 +4382,9 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
-      const allowance = await this._getVestAllowance(web3, govToken, account);
-
+      const allowance = await this._getVestAllowance(govToken, account);
+      if (!allowance)
+        throw new Error("Error getting allowance in increase vest");
       if (BigNumber(allowance).lt(amount)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: allowanceTXID,
@@ -4719,102 +4398,68 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(amount)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          govToken.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          govToken.address,
+          CONTRACTS.VE_TOKEN_ADDRESS
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          this._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [CONTRACTS.VE_TOKEN_ADDRESS, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
 
       // SUBMIT INCREASE TRANSACTION
       const sendAmount = BigNumber(amount)
         .times(10 ** govToken.decimals)
         .toFixed(0);
 
-      const veTokenContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
-      );
+      const writeIncreaseAmount = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_TOKEN_ADDRESS,
+          abi: CONTRACTS.VE_TOKEN_ABI,
+          functionName: "increase_amount",
+          args: [BigInt(tokenID), BigInt(sendAmount)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-      this._callContractWait(
-        web3,
-        veTokenContract,
-        "increase_amount",
-        [tokenID, sendAmount],
-        account,
-        gasPrice,
-        null,
-        null,
-        vestTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      await this._writeContractWrapper(vestTXID, writeIncreaseAmount);
 
-          this._getGovTokenInfo(web3, account);
-          this._updateVestNFTByID(tokenID);
+      this._getGovTokenInfo(account);
+      this._updateVestNFTByID(tokenID);
 
-          this.emitter.emit(ACTIONS.INCREASE_VEST_AMOUNT_RETURNED);
-        }
-      );
+      this.emitter.emit(ACTIONS.INCREASE_VEST_AMOUNT_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  increaseVestDuration = async (payload) => {
+  increaseVestDuration = async (payload: {
+    type: string;
+    content: { unlockTime: string; tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const govToken = this.getStore("govToken");
       const { tokenID, unlockTime } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let vestTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
         title: `Increase unlock time on token #${tokenID}`,
         type: "Vest",
         verb: "Vest Increased",
@@ -4827,57 +4472,184 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const writeIncreaseDuration = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_TOKEN_ADDRESS,
+          abi: CONTRACTS.VE_TOKEN_ABI,
+          functionName: "increase_unlock_time",
+          args: [BigInt(tokenID), BigInt(unlockTime)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-      // SUBMIT INCREASE TRANSACTION
-      const veTokenContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
-      );
+      await this._writeContractWrapper(vestTXID, writeIncreaseDuration);
 
-      this._callContractWait(
-        web3,
-        veTokenContract,
-        "increase_unlock_time",
-        [tokenID, unlockTime + ""],
-        account,
-        gasPrice,
-        null,
-        null,
-        vestTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      this._updateVestNFTByID(tokenID);
 
-          this._updateVestNFTByID(tokenID);
-
-          this.emitter.emit(ACTIONS.INCREASE_VEST_DURATION_RETURNED);
-        }
-      );
+      this.emitter.emit(ACTIONS.INCREASE_VEST_DURATION_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  withdrawVest = async (payload) => {
+  resetVest = async (payload: {
+    type: string;
+    content: { tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
       const { tokenID } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let rewardsTXID = this.getTXUUID();
+      let rebaseTXID = this.getTXUUID();
+      let resetTXID = this.getTXUUID();
+
+      this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Reset veNFT #${tokenID}`,
+        type: "Reset",
+        verb: "Vest Reseted",
+        transactions: [
+          {
+            uuid: rewardsTXID,
+            description: `Checking unclaimed bribes`,
+            status: "WAITING",
+          },
+          {
+            uuid: rebaseTXID,
+            description: `Checking unclaimed rebase distribution`,
+            status: "WAITING",
+          },
+          {
+            uuid: resetTXID,
+            description: `Resetting your veNFT`,
+            status: "WAITING",
+          },
+        ],
+      });
+
+      // CHECK unclaimed bribes
+      await this.getRewardBalances({ type: "internal", content: { tokenID } });
+      const rewards = this.getStore("rewards");
+
+      if (rewards.xxBribes.length > 0) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rewardsTXID,
+          description: `Unclaimed bribes found, claiming`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rewardsTXID,
+          description: `No unclaimed bribes found`,
+          status: "DONE",
+        });
+      }
+
+      if (rewards.xxBribes.length > 0) {
+        const sendGauges = rewards.xxBribes.map((pair) => {
+          return pair.gauge.xx_wrapped_bribe_address;
+        });
+        const sendTokens = rewards.xxBribes.map((pair) => {
+          return pair.gauge.xx_bribesEarned!.map((bribe) => {
+            return (bribe as Bribe).token.address;
+          });
+        });
+
+        await this.writeClaimBribes(
+          walletClient,
+          rewardsTXID,
+          sendGauges,
+          sendTokens,
+          tokenID
+        );
+      }
+
+      if (rewards.veDist.length > 0) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rebaseTXID,
+          description: `Claiming rebase distribution`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rebaseTXID,
+          description: `No unclaimed rebase`,
+          status: "DONE",
+        });
+      }
+
+      if (rewards.veDist.length > 0) {
+        const writeClaim = async () => {
+          const { request } = await viemClient.simulateContract({
+            account,
+            address: CONTRACTS.VE_DIST_ADDRESS,
+            abi: CONTRACTS.VE_DIST_ABI,
+            functionName: "claim",
+            args: [BigInt(tokenID)],
+          });
+          const txHash = await walletClient.writeContract(request);
+          return txHash;
+        };
+        await this._writeContractWrapper(rebaseTXID, writeClaim);
+      }
+
+      const writeReset = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VOTER_ADDRESS,
+          abi: CONTRACTS.VOTER_ABI,
+          functionName: "reset",
+          args: [BigInt(tokenID)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+
+      await this._writeContractWrapper(resetTXID, writeReset);
+
+      this._updateVestNFTByID(tokenID);
+
+      this.emitter.emit(ACTIONS.RESET_VEST_RETURNED);
+    } catch (e) {
+      console.log(e);
+      console.log("RESET VEST ERROR");
+    }
+  };
+
+  withdrawVest = async (payload: {
+    type: string;
+    content: { tokenID: string };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+
+      const { tokenID } = payload.content;
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let rewards01TXID = this.getTXUUID();
+      let rewards0TXID = this.getTXUUID();
       let resetTXID = this.getTXUUID();
       let vestTXID = this.getTXUUID();
 
@@ -4887,8 +4659,18 @@ class Store {
         verb: "Vest Withdrawn",
         transactions: [
           {
+            uuid: rewards01TXID,
+            description: `Checking unclaimed bribes`,
+            status: "WAITING",
+          },
+          {
+            uuid: rewards0TXID,
+            description: `Checking unclaimed bribes`,
+            status: "WAITING",
+          },
+          {
             uuid: resetTXID,
-            description: `Checking if your nft is attached`,
+            description: `Checking if your has votes`,
             status: "WAITING",
           },
           {
@@ -4899,117 +4681,235 @@ class Store {
         ],
       });
 
-      // CHECK if veNFT is attached
-      const attached = await this._checkNFTAttached(web3, tokenID);
+      // CHECK unclaimed bribes
+      await this.getRewardBalances({ type: "internal", content: { tokenID } });
+      const rewards = this.getStore("rewards");
 
-      if (!!attached) {
+      if (rewards.xxBribes.length > 0) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
-          uuid: resetTXID,
-          description: `NFT is attached, resetting`,
+          uuid: rewards01TXID,
+          description: `Unclaimed bribes found, claiming`,
         });
       } else {
         this.emitter.emit(ACTIONS.TX_STATUS, {
-          uuid: resetTXID,
-          description: `NFT is not attached, skipping reset`,
+          uuid: rewards01TXID,
+          description: `No unclaimed bribes found`,
+          status: "DONE",
+        });
+      }
+      if (rewards.xBribes.length > 0) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rewards0TXID,
+          description: `Unclaimed bribes found, claiming`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: rewards0TXID,
+          description: `No unclaimed bribes found`,
           status: "DONE",
         });
       }
 
-      const resetCallsPromise = [];
-
-      if (!!attached) {
-        const voterContract = new web3.eth.Contract(
-          CONTRACTS.VOTER_ABI as AbiItem[],
-          CONTRACTS.VOTER_ADDRESS
-        );
-
-        const resetPromise = new Promise<void>((resolve, reject) => {
-          this._callContractWait(
-            web3,
-            voterContract,
-            "reset",
-            [tokenID],
-            account,
-            null,
-            null,
-            null,
-            resetTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
+      if (rewards.xxBribes.length > 0) {
+        const sendGauges = rewards.xxBribes.map((pair) => {
+          return pair.gauge.xx_wrapped_bribe_address;
+        });
+        const sendTokens = rewards.xxBribes.map((pair) => {
+          return pair.gauge.xx_bribesEarned!.map((bribe) => {
+            return (bribe as Bribe).token.address;
+          });
         });
 
-        resetCallsPromise.push(resetPromise);
+        await this.writeClaimBribes(
+          walletClient,
+          rewards01TXID,
+          sendGauges,
+          sendTokens,
+          tokenID
+        );
+      }
+      if (rewards.xBribes.length > 0) {
+        const sendGauges = rewards.xBribes.map((pair) => {
+          return pair.gauge.x_wrapped_bribe_address;
+        });
+        const sendTokens = rewards.xBribes.map((pair) => {
+          return pair.gauge.x_bribesEarned!.map((bribe) => {
+            return (bribe as Bribe).token.address;
+          });
+        });
+
+        await this.writeClaimBribes(
+          walletClient,
+          rewards0TXID,
+          sendGauges,
+          sendTokens,
+          tokenID
+        );
       }
 
-      const done = await Promise.all(resetCallsPromise);
+      // CHECK if veNFT has votes
+      const voted = await this._checkNFTVoted(tokenID);
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      if (!!voted) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: resetTXID,
+          description: `NFT has votes, resetting`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: resetTXID,
+          description: `NFT doesn't have votes`,
+          status: "DONE",
+        });
+      }
 
-      // SUBMIT withdraw TRANSACTION
-      const veTokenContract = new web3.eth.Contract(
-        CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-        CONTRACTS.VE_TOKEN_ADDRESS
-      );
+      if (!!voted) {
+        const writeReset = async () => {
+          const { request } = await viemClient.simulateContract({
+            account,
+            address: CONTRACTS.VOTER_ADDRESS,
+            abi: CONTRACTS.VOTER_ABI,
+            functionName: "reset",
+            args: [BigInt(tokenID)],
+          });
+          const txHash = await walletClient.writeContract(request);
+          return txHash;
+        };
 
-      this._callContractWait(
-        web3,
-        veTokenContract,
-        "withdraw",
-        [tokenID],
-        account,
-        gasPrice,
-        null,
-        null,
-        vestTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+        await this._writeContractWrapper(resetTXID, writeReset);
+      }
 
-          this._updateVestNFTByID(tokenID);
+      const writeWithdrawLock = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_TOKEN_ADDRESS,
+          abi: CONTRACTS.VE_TOKEN_ABI,
+          functionName: "withdraw",
+          args: [BigInt(tokenID)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-          this.emitter.emit(ACTIONS.WITHDRAW_VEST_RETURNED);
-        }
-      );
+      await this._writeContractWrapper(vestTXID, writeWithdrawLock);
+
+      this._updateVestNFTByID(tokenID);
+
+      this.emitter.emit(ACTIONS.WITHDRAW_VEST_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _checkNFTAttached = async (web3, tokenID) => {
-    if (!web3) return;
+  mergeNft = async (payload: {
+    type: string;
+    content: { from: string; to: string };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+      const { from, to } = payload.content;
 
-    const votingEscrowContract = new web3.eth.Contract(
-      CONTRACTS.VE_TOKEN_ABI as AbiItem[],
-      CONTRACTS.VE_TOKEN_ADDRESS
-    );
+      let mergeTXID = this.getTXUUID();
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Merge NFT #${from} into #${to}`,
+        verb: "NFT Merged",
+        transactions: [
+          {
+            uuid: mergeTXID,
+            description: `Merging NFT #${from} into #${to}`,
+            status: "WAITING",
+          },
+        ],
+      });
 
-    const attached = await votingEscrowContract.methods
-      .attachments(tokenID)
-      .call();
+      const writeMergeLock = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_TOKEN_ADDRESS,
+          abi: CONTRACTS.VE_TOKEN_ABI,
+          functionName: "merge",
+          args: [BigInt(from), BigInt(to)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-    return attached !== 0;
+      await this._writeContractWrapper(mergeTXID, writeMergeLock);
+
+      this.emitter.emit(ACTIONS.MERGE_NFT_RETURNED);
+    } catch (e) {
+      console.log(e);
+      this.emitter.emit(ACTIONS.ERROR, e);
+    }
   };
 
-  vote = async (payload) => {
+  // actioned in current epoch
+  // either vote or reset, not both
+  // reset would update lastVoted value as well
+  _checkNFTActionEpoch = async (tokenID: string) => {
+    const _lastVoted = await this._checkNFTLastVoted(tokenID);
+
+    // if last voted eq 0, means never voted
+    if (_lastVoted === BigInt("0")) return [false, _lastVoted] as const;
+    const lastVoted = parseInt(_lastVoted.toString());
+
+    let nextEpochTimestamp = this.getStore("updateDate");
+    // if user goes straight to vest page, updateDate maybe not set yet
+    if (nextEpochTimestamp === 0) {
+      nextEpochTimestamp = await stores.helper.getActivePeriod();
+    }
+
+    // 7 days epoch length
+    const actionedInCurrentEpoch =
+      lastVoted > nextEpochTimestamp - 7 * 24 * 60 * 60;
+    return [actionedInCurrentEpoch, _lastVoted] as const;
+  };
+
+  _checkNFTLastVoted = async (tokenID: string) => {
+    const _lastVoted = await viemClient.readContract({
+      address: CONTRACTS.VOTER_ADDRESS,
+      abi: CONTRACTS.VOTER_ABI,
+      functionName: "lastVoted",
+      args: [BigInt(tokenID)],
+    });
+    return _lastVoted;
+  };
+
+  _checkNFTVoted = async (tokenID: string) => {
+    const voted = await viemClient.readContract({
+      address: CONTRACTS.VE_TOKEN_ADDRESS,
+      abi: CONTRACTS.VE_TOKEN_ABI,
+      functionName: "voted",
+      args: [BigInt(tokenID)],
+    });
+
+    return voted;
+  };
+
+  vote = async (payload: {
+    type: string;
+    content: { votes: Votes; tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -5017,9 +4917,10 @@ class Store {
       const { tokenID, votes } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
-      let voteTXID = this.getTXUUID();
+      const voteTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
+      // NOTE understand OR learn why 'await' needed here and all similar places (only one tx makes it done right away)
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
         title: `Cast vote using token #${tokenID}`,
         verb: "Votes Cast",
         transactions: [
@@ -5031,61 +4932,71 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const pairs = this.getStore("pairs");
+      const deadGauges: string[] = [];
 
-      // SUBMIT INCREASE TRANSACTION
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-
-      let onlyVotes = votes.filter((vote) => {
+      const onlyVotes = votes.filter((vote) => {
         return BigNumber(vote.value).gt(0) || BigNumber(vote.value).lt(0);
       });
 
-      let tokens = onlyVotes.map((vote) => {
+      const votesAddresses = onlyVotes.map((vote) => vote.address);
+      const p = pairs.filter((pair) => {
+        return votesAddresses.includes(pair.address);
+      });
+      p.forEach((pair) => {
+        if (pair.isAliveGauge === false) {
+          deadGauges.push(pair.symbol);
+        }
+      });
+
+      if (deadGauges.length > 0) {
+        const error_message = `Gauges ${deadGauges.join(
+          ", "
+        )} are dead and cannot be voted on`;
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: voteTXID,
+          description: error_message,
+        });
+        throw new Error(error_message);
+      }
+
+      const tokens = onlyVotes.map((vote) => {
         return vote.address;
       });
 
-      let voteCounts = onlyVotes.map((vote) => {
-        return BigNumber(vote.value).times(100).toFixed(0);
+      const voteCounts = onlyVotes.map((vote) => {
+        return BigInt(BigNumber(vote.value).times(100).toFixed(0));
       });
 
-      this._callContractWait(
-        web3,
-        gaugesContract,
-        "vote",
-        [parseInt(tokenID), tokens, voteCounts],
-        account,
-        gasPrice,
-        null,
-        null,
-        voteTXID,
-        (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      const writeVote = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VOTER_ADDRESS,
+          abi: CONTRACTS.VOTER_ABI,
+          functionName: "vote",
+          args: [BigInt(tokenID), tokens, voteCounts],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
 
-          this.emitter.emit(ACTIONS.VOTE_RETURNED);
-        }
-      );
+      await this._writeContractWrapper(voteTXID, writeVote);
+
+      this.emitter.emit(ACTIONS.VOTE_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  getVestVotes = async (payload) => {
+  getVestVotes = async (payload: {
+    type: string;
+    content: { tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
         return null;
       }
 
@@ -5104,34 +5015,39 @@ class Store {
         return pair && pair.gauge && pair.gauge.address;
       });
 
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-
-      const multicall = await stores.accountStore.getMulticall();
+      const gaugesContract = {
+        abi: CONTRACTS.VOTER_ABI,
+        address: CONTRACTS.VOTER_ADDRESS,
+      } as const;
 
       const calls = filteredPairs.map((pair) => {
-        return gaugesContract.methods.votes(tokenID, pair.address);
+        return {
+          ...gaugesContract,
+          functionName: "votes",
+          args: [BigInt(tokenID), pair.address],
+        } as const;
       });
 
-      const voteCounts = (await multicall.aggregate(calls)) as string[];
+      const voteCounts = await viemClient.multicall({
+        allowFailure: false,
+        contracts: calls,
+      });
 
       let votes: Vote[] = [];
 
       const totalVotes = voteCounts.reduce((curr, acc) => {
-        let num = BigNumber(acc).gt(0)
-          ? BigNumber(acc)
-          : BigNumber(acc).times(-1);
-        return BigNumber(curr).plus(num);
-      }, BigNumber(0));
+        let num = acc > 0 ? acc : acc * BigInt(-1);
+        return curr + num;
+      }, BigInt(0));
 
       for (let i = 0; i < voteCounts.length; i++) {
         votes.push({
           address: filteredPairs[i].address,
           votePercent:
-            BigNumber(totalVotes).gt(0) || BigNumber(totalVotes).lt(0)
-              ? BigNumber(voteCounts[i]).times(100).div(totalVotes).toFixed(0)
+            totalVotes > 0 || totalVotes < 0
+              ? parseFloat(
+                  ((voteCounts[i] * BigInt(100)) / totalVotes).toString()
+                ).toFixed(0)
               : "0",
         });
       }
@@ -5143,21 +5059,29 @@ class Store {
     }
   };
 
-  createBribe = async (payload) => {
+  createBribe = async (payload: {
+    type: string;
+    content: { asset: BaseAsset; amount: string; gauge: Gauge };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
       const { asset, amount, gauge } = payload.content;
+
+      if (gauge.gauge.xx_wrapped_bribe_address === ZERO_ADDRESS) {
+        console.warn("gauge does not have a bribe address");
+        return null;
+      }
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let allowanceTXID = this.getTXUUID();
@@ -5181,13 +5105,8 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
-      const allowance = await this._getBribeAllowance(
-        web3,
-        asset,
-        gauge,
-        account
-      );
-
+      const allowance = await this._getBribeAllowance(asset, gauge, account);
+      if (!allowance) throw new Error("Error getting bribe allowance");
       if (BigNumber(allowance).lt(amount)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: allowanceTXID,
@@ -5201,175 +5120,96 @@ class Store {
         });
       }
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      const allowanceCallsPromises = [];
-
       // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
       if (BigNumber(allowance).lt(amount)) {
-        const tokenContract = new web3.eth.Contract(
-          CONTRACTS.ERC20_ABI as AbiItem[],
-          asset.address
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          asset.address,
+          gauge.gauge.xx_wrapped_bribe_address
         );
-
-        const tokenPromise = new Promise<void>((resolve, reject) => {
-          this._callContractWait(
-            web3,
-            tokenContract,
-            "approve",
-            [gauge.gauge.wrapped_bribe_address, MAX_UINT256],
-            account,
-            gasPrice,
-            null,
-            null,
-            allowanceTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        allowanceCallsPromises.push(tokenPromise);
       }
-
-      const done = await Promise.all(allowanceCallsPromises);
-
-      // SUBMIT BRIBE TRANSACTION
-      const bribeContract = new web3.eth.Contract(
-        CONTRACTS.BRIBE_ABI as AbiItem[],
-        gauge.gauge.wrapped_bribe_address
-      );
 
       const sendAmount = BigNumber(amount)
         .times(10 ** asset.decimals)
         .toFixed(0);
 
-      this._callContractWait(
-        web3,
-        bribeContract,
-        "notifyRewardAmount",
-        [asset.address, sendAmount],
-        account,
-        gasPrice,
-        null,
-        null,
-        bribeTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
+      // SUBMIT BRIBE TRANSACTION
+      // we bribe xx_wrapped_bribe_address
+      const writeCreateBribe = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: gauge.gauge.xx_wrapped_bribe_address,
+          abi: CONTRACTS.BRIBE_ABI,
+          functionName: "notifyRewardAmount",
+          args: [asset.address, BigInt(sendAmount)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(bribeTXID, writeCreateBribe);
 
-          await this.updatePairsCall(web3, account);
+      this._getGovTokenInfo(account);
+      this._getSpecificAssetInfo(account, asset.address);
 
-          this.emitter.emit(ACTIONS.BRIBE_CREATED);
-        }
-      );
+      await this.updatePairsCall(account);
+      this.emitter.emit(ACTIONS.BRIBE_CREATED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _getBribeAllowance = async (web3, token, pair, account) => {
+  _getBribeAllowance = async (
+    token: BaseAsset,
+    pair: Gauge,
+    address: `0x${string}`
+  ) => {
     try {
-      const tokenContract = new web3.eth.Contract(
-        CONTRACTS.ERC20_ABI,
-        token.address
-      );
-      const allowance = await tokenContract.methods
-        .allowance(account.address, pair.gauge.wrapped_bribe_address)
-        .call();
-      return BigNumber(allowance)
-        .div(10 ** token.decimals)
-        .toFixed(token.decimals);
+      const allowance = await viemClient.readContract({
+        address: token.address,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        // We only bribe x_wrapped_bribe_address
+        args: [address, pair.gauge.xx_wrapped_bribe_address],
+      });
+
+      return formatUnits(allowance, token.decimals);
     } catch (ex) {
       console.error(ex);
       return null;
     }
   };
 
-  getVestBalances = async (payload) => {
+  _getBuyAllowanceNOTE = async (
+    tokenAddress: `0x${string}`,
+    launchpadProjectAddress: `0x${string}`,
+    account: `0x${string}` | null
+  ) => {
     try {
-      const account = stores.accountStore.getStore("account");
-      if (!account) {
-        console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-
-      const { tokenID } = payload.content;
-      const pairs = this.getStore("pairs");
-
-      if (!pairs) {
-        return null;
-      }
-
-      if (!tokenID) {
-        return;
-      }
-
-      const filteredPairs = pairs.filter((pair) => {
-        return pair && pair.gauge;
+      if (!account) throw Error("No account found");
+      const allowance = await viemClient.readContract({
+        address: tokenAddress,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "allowance",
+        args: [account, launchpadProjectAddress],
       });
 
-      const bribesEarned = await Promise.all(
-        filteredPairs.map(async (pair) => {
-          const bribesEarned = await Promise.all(
-            pair.gauge.bribes.map(async (bribe) => {
-              // FIXME: this is external bribe in python and internal in express
-              const bribeContract = new web3.eth.Contract(
-                CONTRACTS.BRIBE_ABI as AbiItem[],
-                pair.gauge.wrapped_bribe_address
-              );
-
-              const [earned] = await Promise.all([
-                bribeContract.methods
-                  .earned(bribe.token.address, tokenID)
-                  .call(),
-              ]);
-
-              return {
-                earned: BigNumber(earned)
-                  .div(10 ** bribe.token.decimals)
-                  .toFixed(bribe.token.decimals),
-              };
-            })
-          );
-
-          pair.gauge.bribesEarned = bribesEarned;
-
-          return pair;
-        })
-      );
-
-      this.emitter.emit(ACTIONS.VEST_BALANCES_RETURNED, bribesEarned);
+      return formatEther(allowance);
     } catch (ex) {
       console.error(ex);
-      this.emitter.emit(ACTIONS.ERROR, ex);
+      return null;
     }
   };
 
-  getRewardBalances = async (payload) => {
+  getRewardBalances = async (payload: {
+    type: string;
+    content: { tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
-        return null;
-      }
-
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
         return null;
       }
 
@@ -5378,70 +5218,107 @@ class Store {
       const pairs = this.getStore("pairs");
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
-
-      const filteredPairs = [
-        ...pairs.filter((pair) => {
-          return pair && pair.gauge;
-        }),
-      ];
-
-      const filteredPairs2 = [
-        ...pairs.filter((pair) => {
-          return pair && pair.gauge;
-        }),
-      ];
-
-      let veDistReward: {
-        token: VestNFT;
-        lockToken: VeToken;
-        rewardToken: Omit<BaseAsset, "local"> & {
-          balanceOf: string;
-        };
-        earned: string;
-        rewardType: "Distribution";
-      }[] = [];
-
-      let filteredBribes: Pair[] = []; // Pair with rewardType set to "Bribe"
-
-      if (tokenID) {
-        const bribesEarned = await Promise.all(
-          filteredPairs.map(async (pair) => {
-            const bribesEarned = await Promise.all(
-              pair.gauge.bribes.map(async (bribe) => {
-                const bribeContract = new web3.eth.Contract(
-                  CONTRACTS.BRIBE_ABI as AbiItem[],
-                  pair.gauge.wrapped_bribe_address
-                );
-
-                const [earned] = await Promise.all([
-                  bribeContract.methods
-                    .earned(bribe.token.address, tokenID)
-                    .call(),
-                ]);
-
-                bribe.earned = BigNumber(earned)
-                  .div(10 ** bribe.token.decimals)
-                  .toFixed(bribe.token.decimals);
-                return bribe;
-              })
-            );
-            pair.gauge.bribesEarned = bribesEarned;
-
-            return pair;
-          })
+      if (!veToken || !govToken)
+        throw new Error(
+          "Error getting veToken and govToken in getRewardBalances"
         );
 
-        filteredBribes = bribesEarned
+      const gauges = pairs.filter(hasGauge);
+
+      if (typeof window.structuredClone === "undefined") {
+        throw new Error(
+          "Your browser does not support structuredClone. Please use a different browser."
+        );
+      }
+
+      const x_filteredPairs = structuredClone(gauges);
+      const xx_filteredPairs = structuredClone(gauges);
+      const filteredPairs2 = structuredClone(gauges);
+      const filteredPairs3 = structuredClone(gauges);
+
+      let veDistReward: VeDistReward[] = [];
+      let x_filteredBribes: Gauge[] = []; // Pair with gauge rewardType set to "XBribe"
+      let xx_filteredBribes: Gauge[] = []; // Pair with gauge rewardType set to "XBribe"
+
+      if (tokenID) {
+        const x_calls = x_filteredPairs.flatMap((pair) =>
+          pair.gauge.x_bribes.map(
+            (bribe) =>
+              ({
+                address: pair.gauge.x_wrapped_bribe_address,
+                abi: CONTRACTS.BRIBE_ABI,
+                functionName: "earned",
+                args: [bribe.token.address, BigInt(tokenID)],
+              } as const)
+          )
+        );
+        const x_callsChunks = chunkArray(x_calls, 100);
+
+        const x_earnedBribesAllPairs = await multicallChunks(x_callsChunks);
+
+        const xx_calls = x_filteredPairs.flatMap((pair) =>
+          pair.gauge.xx_bribes.map(
+            (bribe) =>
+              ({
+                address: pair.gauge.xx_wrapped_bribe_address,
+                abi: CONTRACTS.BRIBE_ABI,
+                functionName: "earned",
+                args: [bribe.token.address, BigInt(tokenID)],
+              } as const)
+          )
+        );
+        const xx_callsChunks = chunkArray(xx_calls, 100);
+
+        const xx_earnedBribesAllPairs = await multicallChunks(xx_callsChunks);
+
+        x_filteredPairs.forEach((pair) => {
+          const x_earnedBribesPair = x_earnedBribesAllPairs.splice(
+            0,
+            pair.gauge.x_bribes.length
+          );
+          pair.gauge.x_bribesEarned = pair.gauge.x_bribes.map((bribe, i) => {
+            return {
+              ...bribe,
+              earned: formatUnits(
+                x_earnedBribesPair[i],
+                bribe.token.decimals
+              ) as `${number}`,
+            };
+          });
+        });
+
+        xx_filteredPairs.forEach((pair) => {
+          const xx_earnedBribesPair = xx_earnedBribesAllPairs.splice(
+            0,
+            pair.gauge.xx_bribes.length
+          );
+          pair.gauge.xx_bribesEarned = pair.gauge.xx_bribes.map((bribe, i) => {
+            return {
+              ...bribe,
+              earned: formatUnits(
+                xx_earnedBribesPair[i],
+                bribe.token.decimals
+              ) as `${number}`,
+            };
+          });
+        });
+
+        x_filteredBribes = x_filteredPairs
           .filter((pair) => {
             if (
-              pair.gauge &&
-              pair.gauge.bribesEarned &&
-              pair.gauge.bribesEarned.length > 0
+              pair.gauge.x_bribesEarned &&
+              pair.gauge.x_bribesEarned.length > 0
             ) {
               let shouldReturn = false;
 
-              for (let i = 0; i < pair.gauge.bribesEarned.length; i++) {
-                if (BigNumber(pair.gauge.bribesEarned[i].earned).gt(0)) {
+              for (let i = 0; i < pair.gauge.x_bribesEarned.length; i++) {
+                if (
+                  pair.gauge.x_bribesEarned[i].earned &&
+                  parseUnits(
+                    pair.gauge.x_bribesEarned[i].earned as `${number}`,
+                    pair.gauge.x_bribes[i].token.decimals
+                  ) > 0
+                ) {
                   shouldReturn = true;
                 }
               }
@@ -5452,89 +5329,136 @@ class Store {
             return false;
           })
           .map((pair) => {
-            pair.rewardType = "Bribe";
+            pair.rewardType = "XBribe";
             return pair;
           });
 
-        const veDistContract = new web3.eth.Contract(
-          CONTRACTS.VE_DIST_ABI as AbiItem[],
-          CONTRACTS.VE_DIST_ADDRESS
-        );
-        const veDistEarned = await veDistContract.methods
-          .claimable(tokenID)
-          .call();
-        const vestNFTs = this.getStore("vestNFTs");
-        let theNFT = vestNFTs.filter((vestNFT) => {
-          return vestNFT.id == tokenID;
+        xx_filteredBribes = xx_filteredPairs
+          .filter((pair) => {
+            if (
+              pair.gauge.xx_bribesEarned &&
+              pair.gauge.xx_bribesEarned.length > 0
+            ) {
+              let shouldReturn = false;
+
+              for (let i = 0; i < pair.gauge.xx_bribesEarned.length; i++) {
+                if (
+                  pair.gauge.xx_bribesEarned[i].earned &&
+                  parseUnits(
+                    pair.gauge.xx_bribesEarned[i].earned as `${number}`,
+                    pair.gauge.xx_bribes[i].token.decimals
+                  ) > 0
+                ) {
+                  shouldReturn = true;
+                }
+              }
+
+              return shouldReturn;
+            }
+
+            return false;
+          })
+          .map((pair) => {
+            pair.rewardType = "XXBribe";
+            return pair;
+          });
+
+        const veDistEarned = await viemClient.readContract({
+          address: CONTRACTS.VE_DIST_ADDRESS,
+          abi: CONTRACTS.VE_DIST_ABI,
+          functionName: "claimable",
+          args: [BigInt(tokenID)],
         });
 
-        if (BigNumber(veDistEarned).gt(0)) {
+        const vestNFTs = this.getStore("vestNFTs");
+        let theNFT = vestNFTs.filter((vestNFT) => {
+          return vestNFT.id === tokenID;
+        });
+
+        if (veDistEarned > 0) {
           veDistReward.push({
             token: theNFT[0],
             lockToken: veToken,
             rewardToken: govToken,
-            earned: BigNumber(veDistEarned)
-              .div(10 ** govToken.decimals)
-              .toFixed(govToken.decimals),
+            earned: formatUnits(veDistEarned, govToken.decimals),
             rewardType: "Distribution",
           });
         }
       }
-      // TODO we probably dont even need claimable any more
-      // const filteredFees: Pair[] = []; // Pair with rewardType set to "Fees"
-      // for (let i = 0; i < pairs.length; i++) {
-      //   let pair = Object.assign({}, pairs[i]);
-      //   if (
-      //     BigNumber(pair.claimable0).gt(0) ||
-      //     BigNumber(pair.claimable1).gt(0)
-      //   ) {
-      //     pair.rewardType = "Fees";
-      //     filteredFees.push(pair);
-      //   }
-      // }
 
-      const rewardsEarned = await Promise.all(
-        filteredPairs2.map(async (pair) => {
-          const gaugeContract = new web3.eth.Contract(
-            CONTRACTS.GAUGE_ABI as AbiItem[],
-            pair.gauge.address
-          );
+      const rewardsCalls = filteredPairs2.map((pair) => {
+        return {
+          address: pair.gauge.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "earned",
+          args: [CONTRACTS.GOV_TOKEN_ADDRESS, account],
+        } as const;
+      });
 
-          const [earned] = await Promise.all([
-            gaugeContract.methods
-              .earned(CONTRACTS.GOV_TOKEN_ADDRESS, account.address)
-              .call(),
-          ]);
+      const BLOTR_rewardsCalls = filteredPairs3.map((pair) => {
+        return {
+          address: pair.gauge.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "earned",
+          args: [CANTO_OPTION_TOKEN, account],
+        } as const;
+      });
 
-          pair.gauge.rewardsEarned = BigNumber(earned)
-            .div(10 ** 18)
-            .toFixed(18);
-          return pair;
-        })
-      );
+      const rewardsEarnedCallResult = await viemClient.multicall({
+        allowFailure: false,
+        contracts: rewardsCalls,
+      });
 
-      const filteredRewards: Pair[] = []; // Pair with rewardType set to "Reward"
+      const BLOTR_rewardsEarnedCallResult = await viemClient.multicall({
+        allowFailure: false,
+        contracts: BLOTR_rewardsCalls,
+      });
+
+      const rewardsEarned = [...filteredPairs2];
+      const BLOTR_rewardsEarned = [...filteredPairs3];
+
+      for (let i = 0; i < rewardsEarned.length; i++) {
+        rewardsEarned[i].gauge.rewardsEarned = formatEther(
+          rewardsEarnedCallResult[i]
+        );
+      }
+
+      for (let i = 0; i < BLOTR_rewardsEarned.length; i++) {
+        BLOTR_rewardsEarned[i].gauge.BLOTR_rewardsEarned = formatEther(
+          BLOTR_rewardsEarnedCallResult[i]
+        );
+      }
+
+      const filteredRewards: Gauge[] = []; // Pair with rewardType set to "Reward"
+      const filteredBlotrRewards: Gauge[] = []; // Pair with rewardType set to "Reward"
       for (let j = 0; j < rewardsEarned.length; j++) {
         let pair = Object.assign({}, rewardsEarned[j]);
         if (
           pair.gauge &&
           pair.gauge.rewardsEarned &&
-          BigNumber(pair.gauge.rewardsEarned).gt(0)
+          parseEther(pair.gauge.rewardsEarned as `${number}`) > 0
         ) {
           pair.rewardType = "Reward";
           filteredRewards.push(pair);
         }
       }
+      for (let j = 0; j < BLOTR_rewardsEarned.length; j++) {
+        let pair = Object.assign({}, BLOTR_rewardsEarned[j]);
+        if (
+          pair.gauge &&
+          pair.gauge.BLOTR_rewardsEarned &&
+          parseEther(pair.gauge.BLOTR_rewardsEarned as `${number}`) > 0
+        ) {
+          pair.rewardType = "oBLOTR_Reward";
+          filteredBlotrRewards.push(pair);
+        }
+      }
 
-      // console.log(filteredBribes, "<< filtered bribes");
-      // console.log(filteredFees, "<< fees");
-      // console.log(filteredRewards, "<< rewards");
-      // console.log(veDistReward, "<< dist rewards");
-
-      const rewards = {
-        bribes: filteredBribes,
-        // fees: filteredFees,
+      const rewards: Store["store"]["rewards"] = {
+        xBribes: x_filteredBribes,
+        xxBribes: xx_filteredBribes,
         rewards: filteredRewards,
+        BLOTR_rewards: filteredBlotrRewards,
         veDist: veDistReward,
       };
 
@@ -5549,17 +5473,23 @@ class Store {
     }
   };
 
-  claimBribes = async (payload) => {
+  claimXBribes = async (payload: {
+    type: string;
+    content: {
+      pair: Gauge;
+      tokenID: string;
+    };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -5568,7 +5498,7 @@ class Store {
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let claimTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
         title: `Claim rewards for ${pair.token0.symbol}/${pair.token1.symbol}`,
         verb: "Rewards Claimed",
         transactions: [
@@ -5580,130 +5510,196 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
       // SUBMIT CLAIM TRANSACTION
-      const gaugesContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-
-      const sendGauges = [pair.gauge.wrapped_bribe_address];
+      const sendGauges = [pair.gauge.x_wrapped_bribe_address];
       const sendTokens = [
-        pair.gauge.bribesEarned.map((bribe) => {
-          return bribe.token.address;
+        pair.gauge.x_bribesEarned!.map((bribe) => {
+          return (bribe as Bribe).token.address;
         }),
       ];
-
-      this._callContractWait(
-        web3,
-        gaugesContract,
-        "claimBribes",
-        [sendGauges, sendTokens, tokenID],
-        account,
-        gasPrice,
-        null,
-        null,
+      await this.writeClaimBribes(
+        walletClient,
         claimTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this.getRewardBalances({ content: { tokenID } });
-          this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
-        }
+        sendGauges,
+        sendTokens,
+        tokenID
       );
+
+      this.getRewardBalances({
+        type: "Internal rewards balances",
+        content: { tokenID },
+      });
+      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  claimAllRewards = async (payload) => {
+  claimXXBribes = async (payload: {
+    type: string;
+    content: {
+      pair: Gauge;
+      tokenID: string;
+    };
+  }) => {
     try {
-      const context = this;
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+
+      const { pair, tokenID } = payload.content;
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let claimTXID = this.getTXUUID();
+
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Claim rewards for ${pair.token0.symbol}/${pair.token1.symbol}`,
+        verb: "Rewards Claimed",
+        transactions: [
+          {
+            uuid: claimTXID,
+            description: `Claiming your bribes`,
+            status: "WAITING",
+          },
+        ],
+      });
+
+      // SUBMIT CLAIM TRANSACTION
+      const sendGauges = [pair.gauge.xx_wrapped_bribe_address];
+      const sendTokens = [
+        pair.gauge.xx_bribesEarned!.map((bribe) => {
+          return (bribe as Bribe).token.address;
+        }),
+      ];
+      await this.writeClaimBribes(
+        walletClient,
+        claimTXID,
+        sendGauges,
+        sendTokens,
+        tokenID
+      );
+
+      this.getRewardBalances({
+        type: "Internal rewards balances",
+        content: { tokenID },
+      });
+      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
+      this.getBalances();
+    } catch (ex) {
+      console.error(ex);
+      this.emitter.emit(ACTIONS.ERROR, ex);
+    }
+  };
+
+  claimAllRewards = async (payload: {
+    type: string;
+    content: {
+      pairs: Store["store"]["rewards"][keyof Store["store"]["rewards"]];
+      tokenID: string;
+    };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
       const { pairs, tokenID } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
-      let claimTXID = this.getTXUUID();
-      // let feeClaimTXIDs = [];
-      let rewardClaimTXIDs = [];
-      let distributionClaimTXIDs = [];
+      let claim01TXID = this.getTXUUID();
+      let claim0TXID = this.getTXUUID();
+      let rewardClaimTXIDs: string[] = [];
+      let oblotr_rewardClaimTXIDs: string[] = [];
+      let distributionClaimTXIDs: string[] = [];
 
-      let bribePairs = pairs.filter((pair) => {
-        return pair.rewardType === "Bribe";
+      let xBribePairs = (pairs as Gauge[]).filter((pair) => {
+        return pair.rewardType === "XBribe";
+      });
+      let xxBribePairs = (pairs as Gauge[]).filter((pair) => {
+        return pair.rewardType === "XXBribe";
       });
 
-      // let feePairs = pairs.filter((pair) => {
-      //   return pair.rewardType === "Fees";
-      // });
-
-      let rewardPairs = pairs.filter((pair) => {
+      let rewardPairs = (pairs as Gauge[]).filter((pair) => {
         return pair.rewardType === "Reward";
       });
 
-      let distribution = pairs.filter((pair) => {
+      let oBlotrRewardPairs = (pairs as Gauge[]).filter((pair) => {
+        return pair.rewardType === "oBLOTR_Reward";
+      });
+
+      let distribution = (pairs as VeDistReward[]).filter((pair) => {
         return pair.rewardType === "Distribution";
       });
 
-      const sendGauges = bribePairs.map((pair) => {
-        return pair.gauge.wrapped_bribe_address;
+      const sendGauges01 = xxBribePairs.map((pair) => {
+        return pair.gauge.xx_wrapped_bribe_address;
       });
-      const sendTokens = bribePairs.map((pair) => {
-        return pair.gauge.bribesEarned.map((bribe) => {
-          return bribe.token.address;
+      const sendTokens01 = xxBribePairs.map((pair) => {
+        return pair.gauge.xx_bribesEarned!.map((bribe) => {
+          return (bribe as Bribe).token.address;
+        });
+      });
+      const sendGauges0 = xBribePairs.map((pair) => {
+        return pair.gauge.x_wrapped_bribe_address;
+      });
+      const sendTokens0 = xBribePairs.map((pair) => {
+        return pair.gauge.x_bribesEarned!.map((bribe) => {
+          return (bribe as Bribe).token.address;
         });
       });
 
       if (
-        bribePairs.length == 0 &&
-        // feePairs.length == 0 &&
-        rewardPairs.length == 0
+        xBribePairs.length == 0 &&
+        xxBribePairs.length == 0 &&
+        rewardPairs.length == 0 &&
+        oBlotrRewardPairs.length == 0
       ) {
         this.emitter.emit(ACTIONS.ERROR, "Nothing to claim");
         this.emitter.emit(ACTIONS.CLAIM_ALL_REWARDS_RETURNED);
         return;
       }
 
-      let sendOBJ = {
+      let sendOBJ: {
+        title: string;
+        verb: string;
+        transactions: ITransaction["transactions"];
+      } = {
         title: `Claim all rewards`,
         verb: "Rewards Claimed",
         transactions: [],
       };
 
-      if (bribePairs.length > 0) {
+      if (xxBribePairs.length > 0) {
         sendOBJ.transactions.push({
-          uuid: claimTXID,
+          uuid: claim01TXID,
           description: `Claiming all your available bribes`,
-          status: "WAITING",
+          status: TransactionStatus.WAITING,
         });
       }
-
-      // if (feePairs.length > 0) {
-      //   for (let i = 0; i < feePairs.length; i++) {
-      //     const newClaimTX = this.getTXUUID();
-
-      //     feeClaimTXIDs.push(newClaimTX);
-      //     sendOBJ.transactions.push({
-      //       uuid: newClaimTX,
-      //       description: `Claiming fees for ${feePairs[i].symbol}`,
-      //       status: "WAITING",
-      //     });
-      //   }
-      // }
+      if (xBribePairs.length > 0) {
+        sendOBJ.transactions.push({
+          uuid: claim0TXID,
+          description: `Claiming all your available bribes`,
+          status: TransactionStatus.WAITING,
+        });
+      }
 
       if (rewardPairs.length > 0) {
         for (let i = 0; i < rewardPairs.length; i++) {
@@ -5713,7 +5709,19 @@ class Store {
           sendOBJ.transactions.push({
             uuid: newClaimTX,
             description: `Claiming reward for ${rewardPairs[i].symbol}`,
-            status: "WAITING",
+            status: TransactionStatus.WAITING,
+          });
+        }
+      }
+      if (oBlotrRewardPairs.length > 0) {
+        for (let i = 0; i < oBlotrRewardPairs.length; i++) {
+          const newClaimTX = this.getTXUUID();
+
+          oblotr_rewardClaimTXIDs.push(newClaimTX);
+          sendOBJ.transactions.push({
+            uuid: newClaimTX,
+            description: `Claiming reward for ${oBlotrRewardPairs[i].symbol}`,
+            status: TransactionStatus.WAITING,
           });
         }
       }
@@ -5726,165 +5734,115 @@ class Store {
           sendOBJ.transactions.push({
             uuid: newClaimTX,
             description: `Claiming distribution for NFT #${distribution[i].token.id}`,
-            status: "WAITING",
+            status: TransactionStatus.WAITING,
           });
         }
       }
 
-      this.emitter.emit(ACTIONS.TX_ADDED, sendOBJ);
+      await this.emitter.emit(ACTIONS.TX_ADDED, sendOBJ);
 
-      const gasPrice = await stores.accountStore.getGasPrice();
-
-      if (bribePairs.length > 0) {
-        // SUBMIT CLAIM TRANSACTION
-        const gaugesContract = new web3.eth.Contract(
-          CONTRACTS.VOTER_ABI as AbiItem[],
-          CONTRACTS.VOTER_ADDRESS
+      if (xxBribePairs.length > 0) {
+        await this.writeClaimBribes(
+          walletClient,
+          claim01TXID,
+          sendGauges01,
+          sendTokens01,
+          tokenID
         );
-
-        const claimPromise = new Promise<void>((resolve, reject) => {
-          context._callContractWait(
-            web3,
-            gaugesContract,
-            "claimBribes",
-            [sendGauges, sendTokens, tokenID],
-            account,
-            gasPrice,
-            null,
-            null,
-            claimTXID,
-            (err) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-
-              resolve();
-            }
-          );
-        });
-
-        await Promise.all([claimPromise]);
       }
-
-      // if (feePairs.length > 0) {
-      //   for (let i = 0; i < feePairs.length; i++) {
-      //     const pairContract = new web3.eth.Contract(
-      //       CONTRACTS.PAIR_ABI as AbiItem[],
-      //       feePairs[i].address
-      //     );
-
-      //     const claimPromise = new Promise<void>((resolve, reject) => {
-      //       context._callContractWait(
-      //         web3,
-      //         pairContract,
-      //         "claimFees",
-      //         [],
-      //         account,
-      //         gasPrice,
-      //         null,
-      //         null,
-      //         feeClaimTXIDs[i],
-      //         (err) => {
-      //           if (err) {
-      //             reject(err);
-      //             return;
-      //           }
-
-      //           resolve();
-      //         }
-      //       );
-      //     });
-
-      //     await Promise.all([claimPromise]);
-      //   }
-      // }
+      if (xBribePairs.length > 0) {
+        await this.writeClaimBribes(
+          walletClient,
+          claim0TXID,
+          sendGauges0,
+          sendTokens0,
+          tokenID
+        );
+      }
 
       if (rewardPairs.length > 0) {
         for (let i = 0; i < rewardPairs.length; i++) {
-          const gaugeContract = new web3.eth.Contract(
-            CONTRACTS.GAUGE_ABI as AbiItem[],
-            rewardPairs[i].gauge.address
-          );
-          const sendTok = [CONTRACTS.GOV_TOKEN_ADDRESS];
-
-          const rewardPromise = new Promise<void>((resolve, reject) => {
-            context._callContractWait(
-              web3,
-              gaugeContract,
-              "getReward",
-              [account.address, sendTok],
+          const writeGetReward = async () => {
+            const { request } = await viemClient.simulateContract({
               account,
-              gasPrice,
-              null,
-              null,
-              rewardClaimTXIDs[i],
-              (err) => {
-                if (err) {
-                  reject(err);
-                  return;
-                }
+              address: rewardPairs[i].gauge.address,
+              abi: CONTRACTS.GAUGE_ABI,
+              functionName: "getReward",
+              args: [account, [CONTRACTS.GOV_TOKEN_ADDRESS]],
+            });
+            const txHash = await walletClient.writeContract(request);
+            return txHash;
+          };
+          await this._writeContractWrapper(rewardClaimTXIDs[i], writeGetReward);
+        }
+      }
 
-                resolve();
-              }
-            );
-          });
-
-          await Promise.all([rewardPromise]);
+      if (oBlotrRewardPairs.length > 0) {
+        for (let i = 0; i < oBlotrRewardPairs.length; i++) {
+          const writeGetReward = async () => {
+            const { request } = await viemClient.simulateContract({
+              account,
+              address: oBlotrRewardPairs[i].gauge.address,
+              abi: CONTRACTS.GAUGE_ABI,
+              functionName: "getReward",
+              args: [account, [CANTO_OPTION_TOKEN]],
+            });
+            const txHash = await walletClient.writeContract(request);
+            return txHash;
+          };
+          await this._writeContractWrapper(
+            oblotr_rewardClaimTXIDs[i],
+            writeGetReward
+          );
         }
       }
 
       if (distribution.length > 0) {
-        const veDistContract = new web3.eth.Contract(
-          CONTRACTS.VE_DIST_ABI as AbiItem[],
-          CONTRACTS.VE_DIST_ADDRESS
-        );
         for (let i = 0; i < distribution.length; i++) {
-          const rewardPromise = new Promise<void>((resolve, reject) => {
-            context._callContractWait(
-              web3,
-              veDistContract,
-              "claim",
-              [tokenID],
+          const writeClaim = async () => {
+            const { request } = await viemClient.simulateContract({
               account,
-              gasPrice,
-              null,
-              null,
-              distributionClaimTXIDs[i],
-              (err) => {
-                if (err) {
-                  reject(err);
-                  return;
-                }
-
-                resolve();
-              }
-            );
-          });
-
-          await Promise.all([rewardPromise]);
+              address: CONTRACTS.VE_DIST_ADDRESS,
+              abi: CONTRACTS.VE_DIST_ABI,
+              functionName: "claim",
+              args: [BigInt(tokenID)],
+            });
+            const txHash = await walletClient.writeContract(request);
+            return txHash;
+          };
+          await this._writeContractWrapper(
+            distributionClaimTXIDs[i],
+            writeClaim
+          );
         }
       }
 
-      this.getRewardBalances({ content: { tokenID } });
+      this.getRewardBalances({
+        type: "Internal reward balances",
+        content: { tokenID },
+      });
       this.emitter.emit(ACTIONS.CLAIM_ALL_REWARDS_RETURNED);
+      this.getBalances();
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  claimRewards = async (payload) => {
+  claimRewards = async (payload: {
+    type: string;
+    content: { pair: Gauge; tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -5893,7 +5851,7 @@ class Store {
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let claimTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
         title: `Claim rewards for ${pair.token0.symbol}/${pair.token1.symbol}`,
         verb: "Rewards Claimed",
         transactions: [
@@ -5905,52 +5863,104 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const writeGetReward = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: pair.gauge?.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "getReward",
+          args: [account, [CONTRACTS.GOV_TOKEN_ADDRESS]],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(claimTXID, writeGetReward);
 
-      // SUBMIT CLAIM TRANSACTION
-      const gaugeContract = new web3.eth.Contract(
-        CONTRACTS.GAUGE_ABI as AbiItem[],
-        pair.gauge.address
-      );
-
-      const sendTokens = [CONTRACTS.GOV_TOKEN_ADDRESS];
-
-      this._callContractWait(
-        web3,
-        gaugeContract,
-        "getReward",
-        [account.address, sendTokens],
-        account,
-        gasPrice,
-        null,
-        null,
-        claimTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this.getRewardBalances({ content: { tokenID } });
-          this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
-        }
-      );
+      this.getRewardBalances({
+        type: "internal reward balances",
+        content: { tokenID },
+      });
+      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
+      this._getSpecificAssetInfo(account, CONTRACTS.GOV_TOKEN_ADDRESS);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  claimVeDist = async (payload) => {
+  claimBlotrRewards = async (payload: {
+    type: string;
+    content: { pair: Gauge; tokenID: string };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+
+      const { pair, tokenID } = payload.content;
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let claimTXID = this.getTXUUID();
+
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Claim rewards for ${pair.token0.symbol}/${pair.token1.symbol}`,
+        verb: "Rewards Claimed",
+        transactions: [
+          {
+            uuid: claimTXID,
+            description: `Claiming your rewards`,
+            status: "WAITING",
+          },
+        ],
+      });
+
+      const writeGetReward = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: pair.gauge?.address,
+          abi: CONTRACTS.GAUGE_ABI,
+          functionName: "getReward",
+          args: [account, [CANTO_OPTION_TOKEN]],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(claimTXID, writeGetReward);
+
+      this.getRewardBalances({
+        type: "internal reward balances",
+        content: { tokenID },
+      });
+      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
+      this._getSpecificAssetInfo(account, CONTRACTS.GOV_TOKEN_ADDRESS);
+    } catch (ex) {
+      console.error(ex);
+      this.emitter.emit(ACTIONS.ERROR, ex);
+    }
+  };
+
+  claimVeDist = async (payload: {
+    type: string;
+    content: { tokenID: string };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
@@ -5959,7 +5969,7 @@ class Store {
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let claimTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
         title: `Claim distribution for NFT #${tokenID}`,
         verb: "Rewards Claimed",
         transactions: [
@@ -5971,331 +5981,658 @@ class Store {
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const writeClaim = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: CONTRACTS.VE_DIST_ADDRESS,
+          abi: CONTRACTS.VE_DIST_ABI,
+          functionName: "claim",
+          args: [BigInt(tokenID)],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(claimTXID, writeClaim);
 
-      // SUBMIT CLAIM TRANSACTION
-      const veDistContract = new web3.eth.Contract(
-        CONTRACTS.VE_DIST_ABI as AbiItem[],
-        CONTRACTS.VE_DIST_ADDRESS
-      );
-
-      this._callContractWait(
-        web3,
-        veDistContract,
-        "claim",
-        [tokenID],
-        account,
-        gasPrice,
-        null,
-        null,
-        claimTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this.getRewardBalances({ content: { tokenID } });
-          this.emitter.emit(ACTIONS.CLAIM_VE_DIST_RETURNED);
-        }
-      );
+      this.getRewardBalances({
+        type: "internal reward balances",
+        content: { tokenID },
+      });
+      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  claimPairFees = async (payload) => {
+  bribeAutoBribe = async (payload: {
+    type: string;
+    content: { address: `0x${string}` };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const { pair, tokenID } = payload.content;
+      const { address } = payload.content;
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let bribeTXID = this.getTXUUID();
+
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Bribe AutoBribe`,
+        verb: "Bribed",
+        transactions: [
+          {
+            uuid: bribeTXID,
+            description: `Bribing AutoBribe`,
+            status: "WAITING",
+          },
+        ],
+      });
+
+      const writeBribeAutoBribe = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: address,
+          abi: CONTRACTS.AUTO_BRIBE_ABI,
+          functionName: "bribe",
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(bribeTXID, writeBribeAutoBribe);
+
+      queryClient.invalidateQueries(["autoBribes"]);
+    } catch (ex) {
+      console.error(ex);
+      this.emitter.emit(ACTIONS.ERROR, ex);
+    }
+  };
+
+  buy = async (payload: {
+    type: string;
+    content: {
+      amount: `${number}`;
+      refCode: string;
+      projectAddress: string | string[];
+    };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+
+      const { amount, refCode, projectAddress } = payload.content;
+
+      const sendAmount = parseEther(amount);
+
+      const refCodeToSend = isAddress(refCode) ? refCode : ZERO_ADDRESS;
+
+      if (Array.isArray(projectAddress) || !isAddress(projectAddress)) {
+        console.warn("projectAddress is not a valid address");
+        return null;
+      }
+
+      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
+      let allowanceTXID = this.getTXUUID();
+      let buyTXID = this.getTXUUID();
+
+      this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Participate in Launchpad`,
+        verb: "Participated",
+        transactions: [
+          {
+            uuid: allowanceTXID,
+            description: `Checking your NOTE allowance`,
+            status: "WAITING",
+          },
+          {
+            uuid: buyTXID,
+            description: `Buy worth of ${amount} NOTE`,
+            status: "WAITING",
+          },
+        ],
+      });
+
+      // CHECK ALLOWANCES AND SET TX DISPLAY
+      const allowance = await this._getBuyAllowanceNOTE(
+        "0x4e71A2E537B7f9D9413D3991D37958c0b5e1e503",
+        projectAddress,
+        account
+      );
+      if (!allowance) throw new Error("Error getting bribe allowance");
+      if (BigNumber(allowance).lt(amount)) {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: allowanceTXID,
+          description: `Allow the bribe contract to spend your $NOTE`,
+        });
+      } else {
+        this.emitter.emit(ACTIONS.TX_STATUS, {
+          uuid: allowanceTXID,
+          description: `Allowance on $NOTE sufficient`,
+          status: "DONE",
+        });
+      }
+
+      // SUBMIT REQUIRED ALLOWANCE TRANSACTIONS
+      if (BigNumber(allowance).lt(amount)) {
+        await this.writeApprove(
+          walletClient,
+          allowanceTXID,
+          "0x4e71A2E537B7f9D9413D3991D37958c0b5e1e503",
+          projectAddress
+        );
+      }
+
+      const writeBuy = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: projectAddress,
+          abi: CONTRACTS.FAIR_AUCTION_ABI,
+          functionName: "buy",
+          args: [sendAmount, refCodeToSend],
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(buyTXID, writeBuy);
+
+      queryClient.invalidateQueries({
+        queryKey: [
+          "launchpadProject",
+          "noteAsset",
+          "userClaimableAndClaimableRefEarnings",
+        ],
+      });
+    } catch (ex) {
+      console.error(ex);
+      this.emitter.emit(ACTIONS.ERROR, ex);
+    }
+  };
+
+  claimEarned = async (payload: {
+    type: string;
+    content: {
+      projectAddress: string | string[];
+    };
+  }) => {
+    try {
+      const account = getAccount().address;
+      if (!account) {
+        console.warn("account not found");
+        return null;
+      }
+
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
+        return null;
+      }
+
+      const { projectAddress } = payload.content;
+
+      if (Array.isArray(projectAddress) || !isAddress(projectAddress)) {
+        console.warn("projectAddress is not a valid address");
+        return null;
+      }
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let claimTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
-        title: `Claim fees for ${pair.token0.symbol}/${pair.token1.symbol}`,
-        verb: "Fees Claimed",
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Claim Earned Amount`,
+        verb: "Claimed",
         transactions: [
           {
             uuid: claimTXID,
-            description: `Claiming your fees`,
+            description: `Claiming`,
             status: "WAITING",
           },
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const writeClaim = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: projectAddress,
+          abi: CONTRACTS.FAIR_AUCTION_ABI,
+          functionName: "claim",
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(claimTXID, writeClaim);
 
-      // SUBMIT CLAIM TRANSACTION
-      const pairContract = new web3.eth.Contract(
-        CONTRACTS.PAIR_ABI as AbiItem[],
-        pair.address
-      );
-
-      this._callContractWait(
-        web3,
-        pairContract,
-        "claimFees",
-        [],
-        account,
-        gasPrice,
-        null,
-        null,
-        claimTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          this.getRewardBalances({ content: { tokenID } });
-          this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
-        }
-      );
+      queryClient.invalidateQueries({
+        queryKey: ["userClaimableAndClaimableRefEarnings"],
+      });
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  searchWhitelist = async (payload) => {
+  claimRefEarned = async (payload: {
+    type: string;
+    content: {
+      projectAddress: string | string[];
+    };
+  }) => {
     try {
-      const account = stores.accountStore.getStore("account");
+      const account = getAccount().address;
       if (!account) {
         console.warn("account not found");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
-        return null;
-      }
-      const veToken = this.getStore("veToken");
-
-      const { search } = payload.content;
-
-      const voterContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-
-      const [isWhitelisted, listingFee] = await Promise.all([
-        voterContract.methods.isWhitelisted(search).call(),
-        voterContract.methods.listing_fee().call(),
-      ]);
-
-      const token = await this.getBaseAsset(search);
-      token.isWhitelisted = isWhitelisted;
-      token.listingFee = BigNumber(listingFee)
-        .div(10 ** veToken.decimals)
-        .toFixed(veToken.decimals);
-
-      this.emitter.emit(ACTIONS.SEARCH_WHITELIST_RETURNED, token);
-    } catch (ex) {
-      console.error(ex);
-      this.emitter.emit(ACTIONS.ERROR, ex);
-    }
-  };
-
-  whitelistToken = async (payload) => {
-    try {
-      const account = stores.accountStore.getStore("account");
-      if (!account) {
-        console.warn("account not found");
+      const walletClient = await getWalletClient({ chainId: canto.id });
+      if (!walletClient) {
+        console.warn("wallet");
         return null;
       }
 
-      const web3 = await stores.accountStore.getWeb3Provider();
-      if (!web3) {
-        console.warn("web3 not found");
+      const { projectAddress } = payload.content;
+
+      if (Array.isArray(projectAddress) || !isAddress(projectAddress)) {
+        console.warn("projectAddress is not a valid address");
         return null;
       }
-
-      const { token, nft } = payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
-      let whitelistTXID = this.getTXUUID();
+      let claimTXID = this.getTXUUID();
 
-      this.emitter.emit(ACTIONS.TX_ADDED, {
-        title: `WHITELIST ${token.symbol}`,
-        verb: "Token Whitelisted",
+      await this.emitter.emit(ACTIONS.TX_ADDED, {
+        title: `Claim Ref Earned Amount`,
+        verb: "Claimed",
         transactions: [
           {
-            uuid: whitelistTXID,
-            description: `Whitelisting ${token.symbol}`,
+            uuid: claimTXID,
+            description: `Claiming`,
             status: "WAITING",
           },
         ],
       });
 
-      const gasPrice = await stores.accountStore.getGasPrice();
+      const writeClaim = async () => {
+        const { request } = await viemClient.simulateContract({
+          account,
+          address: projectAddress,
+          abi: CONTRACTS.FAIR_AUCTION_ABI,
+          functionName: "claimRefEarnings",
+        });
+        const txHash = await walletClient.writeContract(request);
+        return txHash;
+      };
+      await this._writeContractWrapper(claimTXID, writeClaim);
 
-      // SUBMIT WHITELIST TRANSACTION
-      const voterContract = new web3.eth.Contract(
-        CONTRACTS.VOTER_ABI as AbiItem[],
-        CONTRACTS.VOTER_ADDRESS
-      );
-
-      this._callContractWait(
-        web3,
-        voterContract,
-        "whitelist",
-        [token.address, nft.id],
-        account,
-        gasPrice,
-        null,
-        null,
-        whitelistTXID,
-        async (err) => {
-          if (err) {
-            return this.emitter.emit(ACTIONS.ERROR, err);
-          }
-
-          window.setTimeout(() => {
-            this.dispatcher.dispatch({
-              type: ACTIONS.SEARCH_WHITELIST,
-              content: { search: token.address },
-            });
-          }, 2);
-
-          this.emitter.emit(ACTIONS.WHITELIST_TOKEN_RETURNED);
-        }
-      );
+      queryClient.invalidateQueries({
+        queryKey: ["userClaimableAndClaimableRefEarnings"],
+      });
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
-  _callContractWait = (
-    web3: Web3,
-    contract: Contract,
-    method: string,
-    params: any[],
-    account,
-    gasPrice,
-    dispatchEvent,
-    dispatchContent,
-    uuid,
-    callback,
-    sendValue = null
+  writeApprove = async (
+    walletClient: WalletClient,
+    txId: string,
+    tokenAddress: `0x${string}`,
+    approveTo: `0x${string}`
   ) => {
-    this.emitter.emit(ACTIONS.TX_PENDING, { uuid });
-    const gasCost = contract.methods[method](...params)
-      .estimateGas({ from: account.address, value: sendValue })
-      .then(async (estimatedGas) => [
-        ...(await stores.accountStore.getGasPriceEIP1559()),
-        estimatedGas,
-      ])
-      .then(([maxFeePerGas, maxPriorityFeePerGas, estimatedGas]) => {
-        const context = this;
-        contract.methods[method](...params)
-          .send({
-            from: account.address,
-            gas: estimatedGas,
-            value: sendValue,
-            maxFeePerGas,
-            maxPriorityFeePerGas,
-          })
-          .on("transactionHash", function (txHash) {
-            context.emitter.emit(ACTIONS.TX_SUBMITTED, { uuid, txHash });
-          })
-          .on("receipt", function (receipt) {
-            context.emitter.emit(ACTIONS.TX_CONFIRMED, {
-              uuid,
-              txHash: receipt.transactionHash,
-            });
-            if (method !== "approve") {
-              setTimeout(() => {
-                context.dispatcher.dispatch({ type: ACTIONS.GET_BALANCES });
-              }, 1);
-            }
-            callback(null, receipt.transactionHash);
-            if (dispatchEvent) {
-              context.dispatcher.dispatch({
-                type: dispatchEvent,
-                content: dispatchContent,
-              });
-            }
-          })
-          .on("error", function (error) {
-            if (!error.toString().includes("-32601")) {
-              if (error.message) {
-                context.emitter.emit(ACTIONS.TX_REJECTED, {
-                  uuid,
-                  error: error.message,
-                });
-                return callback(error.message);
-              }
-              context.emitter.emit(ACTIONS.TX_REJECTED, {
-                uuid,
-                error: error,
-              });
-              callback(error);
-            }
-          })
-          .catch((error) => {
-            if (!error.toString().includes("-32601")) {
-              if (error.message) {
-                context.emitter.emit(ACTIONS.TX_REJECTED, {
-                  uuid,
-                  error: error.message,
-                });
-                return callback(error.message);
-              }
-              context.emitter.emit(ACTIONS.TX_REJECTED, {
-                uuid,
-                error: error,
-              });
-              callback(error);
-            }
-          });
-      })
-      .catch((ex) => {
-        console.log(ex);
-        if (ex.message) {
-          this.emitter.emit(ACTIONS.TX_REJECTED, { uuid, error: ex.message });
-          return callback(ex.message);
-        }
+    const [account] = await walletClient.getAddresses();
+    const write = async () => {
+      const { request } = await viemClient.simulateContract({
+        account,
+        address: tokenAddress,
+        abi: CONTRACTS.ERC20_ABI,
+        functionName: "approve",
+        args: [approveTo, BigInt(MAX_UINT256)],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    await this._writeContractWrapper(txId, write);
+  };
+
+  writeWrapUnwrap = async (
+    walletClient: WalletClient,
+    targetWrapper: `0x${string}`,
+    isWrap: boolean,
+    wrapUnwrapTXID: string,
+    sendFromAmount: string
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const wNativeTokenContract = {
+      address: targetWrapper,
+      abi: W_NATIVE_ABI,
+    } as const;
+    const writeWrap = async () => {
+      const { request } = await viemClient.simulateContract({
+        ...wNativeTokenContract,
+        account,
+        functionName: "deposit",
+        args: undefined,
+        value: BigInt(sendFromAmount),
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    const writeUnwrap = async () => {
+      const { request } = await viemClient.simulateContract({
+        ...wNativeTokenContract,
+        account,
+        functionName: "withdraw",
+        args: [BigInt(sendFromAmount)],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    if (isWrap) {
+      await this._writeContractWrapper(wrapUnwrapTXID, writeWrap);
+    } else {
+      await this._writeContractWrapper(wrapUnwrapTXID, writeUnwrap);
+    }
+  };
+
+  writeAddLiquidity = async (
+    walletClient: WalletClient,
+    depositTXID: string,
+    token0: BaseAsset,
+    token1: BaseAsset,
+    stable: boolean,
+    sendAmount0: string,
+    sendAmount1: string,
+    sendAmount0Min: string,
+    sendAmount1Min: string,
+    deadline: string
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const routerContract = {
+      abi: CONTRACTS.ROUTER_ABI,
+      address: CONTRACTS.ROUTER_ADDRESS,
+    } as const;
+    const writeWithoutNativeToken = async () => {
+      const { request } = await viemClient.simulateContract({
+        ...routerContract,
+        account,
+        functionName: "addLiquidity",
+        args: [
+          token0.address,
+          token1.address,
+          stable,
+          BigInt(sendAmount0),
+          BigInt(sendAmount1),
+          BigInt(sendAmount0Min),
+          BigInt(sendAmount1Min),
+          account,
+          BigInt(deadline),
+        ],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    const writeWithNativeTokenFirst = async () => {
+      const { request } = await viemClient.simulateContract({
+        ...routerContract,
+        account,
+        functionName: "addLiquidityETH",
+        args: [
+          token1.address,
+          stable,
+          BigInt(sendAmount1),
+          BigInt(sendAmount1Min),
+          BigInt(sendAmount0Min),
+          account,
+          BigInt(deadline),
+        ],
+        value: BigInt(sendAmount0),
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    const writeWithNativeTokenSecond = async () => {
+      const { request } = await viemClient.simulateContract({
+        ...routerContract,
+        account,
+        functionName: "addLiquidityETH",
+        args: [
+          token0.address,
+          stable,
+          BigInt(sendAmount0),
+          BigInt(sendAmount0Min),
+          BigInt(sendAmount1Min),
+          account,
+          BigInt(deadline),
+        ],
+        value: BigInt(sendAmount1),
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    if (
+      token0.address !== NATIVE_TOKEN.symbol &&
+      token1.address !== NATIVE_TOKEN.symbol
+    ) {
+      await this._writeContractWrapper(depositTXID, writeWithoutNativeToken);
+    } else if (token0.address === NATIVE_TOKEN.symbol) {
+      await this._writeContractWrapper(depositTXID, writeWithNativeTokenFirst);
+    } else {
+      await this._writeContractWrapper(depositTXID, writeWithNativeTokenSecond);
+    }
+  };
+
+  writeRemoveLiquidty = async (
+    walletClient: WalletClient,
+    withdrawTXID: string,
+    token0Address: `0x${string}`,
+    token1Address: `0x${string}`,
+    stable: boolean,
+    sendAmount: bigint,
+    sendAmount0Min: string,
+    sendAmount1Min: string,
+    deadline: string
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const write = async () => {
+      const { request } = await viemClient.simulateContract({
+        account,
+        abi: CONTRACTS.ROUTER_ABI,
+        address: CONTRACTS.ROUTER_ADDRESS,
+        functionName: "removeLiquidity",
+        args: [
+          token0Address,
+          token1Address,
+          stable,
+          sendAmount,
+          BigInt(sendAmount0Min),
+          BigInt(sendAmount1Min),
+          account,
+          BigInt(deadline),
+        ],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    await this._writeContractWrapper(withdrawTXID, write);
+  };
+
+  writeCreateGauge = async (
+    walletClient: WalletClient,
+    createGaugeTXID: string,
+    pairAddress: `0x${string}`
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const write = async () => {
+      const { request } = await viemClient.simulateContract({
+        account,
+        address: CONTRACTS.VOTER_ADDRESS,
+        abi: CONTRACTS.VOTER_ABI,
+        functionName: "createGauge",
+        args: [pairAddress],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    await this._writeContractWrapper(createGaugeTXID, write);
+  };
+
+  writeDeposit = async (
+    walletClient: WalletClient,
+    stakeTXID: string,
+    gaugeAddress: `0x${string}`,
+    balanceOf: bigint
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const write = async () => {
+      const { request } = await viemClient.simulateContract({
+        account,
+        abi: CONTRACTS.GAUGE_ABI,
+        address: gaugeAddress,
+        functionName: "deposit",
+        args: [balanceOf, BigInt(0)],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    await this._writeContractWrapper(stakeTXID, write);
+  };
+
+  writeClaimBribes = async (
+    walletClient: WalletClient,
+    txId: string,
+    sendGauges: `0x${string}`[],
+    sendTokens: `0x${string}`[][],
+    tokenID: string
+  ) => {
+    const [account] = await walletClient.getAddresses();
+    const write = async () => {
+      const { request } = await viemClient.simulateContract({
+        account,
+        address: CONTRACTS.VOTER_ADDRESS,
+        abi: CONTRACTS.VOTER_ABI,
+        functionName: "claimBribes",
+        args: [sendGauges, sendTokens, BigInt(tokenID)],
+      });
+      const txHash = await walletClient.writeContract(request);
+      return txHash;
+    };
+    await this._writeContractWrapper(txId, write);
+  };
+
+  protected _writeContractWrapper = async (
+    txId: string,
+    write: () => Promise<WriteContractReturnType>
+  ) => {
+    try {
+      this.emitter.emit(ACTIONS.TX_PENDING, { uuid: txId });
+
+      const txHash = await write();
+
+      const receipt = await viemClient.waitForTransactionReceipt({
+        hash: txHash,
+      });
+      if (receipt.status === "success") {
+        this.emitter.emit(ACTIONS.TX_CONFIRMED, {
+          uuid: txId,
+          txHash: receipt.transactionHash,
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error) {
         this.emitter.emit(ACTIONS.TX_REJECTED, {
-          uuid,
-          error: "Error estimating gas",
+          uuid: txId,
+          error: this._mapError(error.message),
         });
-        callback(ex);
+        return;
+      }
+      if (error instanceof BaseError) {
+        this.emitter.emit(ACTIONS.TX_REJECTED, {
+          uuid: txId,
+          error: error.details,
+        });
+        return;
+      }
+      this.emitter.emit(ACTIONS.TX_REJECTED, {
+        uuid: txId,
+        error: error,
       });
+    }
   };
 
-  _makeBatchRequest = (web3, callFrom, calls) => {
-    let batch = new web3.BatchRequest();
+  protected _mapError = (error: string) => {
+    const errorMap = new Map<string, string>([
+      // this happens with slingshot and metamask
+      [
+        "invalid height",
+        "Canto RPC issue. Please try reload page/switch RPC/switch networks back and forth",
+      ],
+      [
+        "attached",
+        "You have already voted with this token or your nft is attached",
+      ],
+      ["TOKEN ALREADY VOTED", "You have already voted with this token"],
+      [
+        "TOKEN_ALREADY_VOTED_THIS_EPOCH",
+        "You have already voted with this token",
+      ],
+      [
+        "INSUFFICIENT A BALANCE",
+        "Router doesn't have enough 'token in' balance",
+      ],
+      [
+        "INSUFFICIENT_A_BALANCE",
+        "Router doesn't have enough 'token in' balance",
+      ],
+      [
+        "INSUFFICIENT B BALANCE",
+        "Router doesn't have enough 'token out' balance",
+      ],
+      [
+        "INSUFFICIENT_B_BALANCE",
+        "Router doesn't have enough 'token out' balance",
+      ],
+      // some wallet some rpc not sure
+      [
+        "EIP-1559",
+        "Canto RPC issue. Please try reload page/switch RPC/switch networks back and forth",
+      ],
+      // this happens in rubby
+      [
+        "request failed with status code 502",
+        "Canto RPC issue. Please try reload page/switch RPC/switch networks back and forth",
+      ],
+      [
+        "Request failed with status code 429",
+        "RPC is being rate limited. Please try reload page/switch RPC/switch networks back and forth",
+      ],
+    ]);
 
-    let promises = calls.map((call) => {
-      return new Promise((res, rej) => {
-        let req = call.request({ from: callFrom }, (err, data) => {
-          if (err) rej(err);
-          else res(data);
-        });
-        batch.add(req);
-      });
-    });
-    batch.execute();
+    for (const [key, value] of errorMap) {
+      if (error.toLowerCase().includes(key.toLowerCase())) {
+        return value;
+      }
+    }
 
-    return Promise.all(promises);
+    return error;
   };
-  //
-  // _getMulticallWatcher = (web3, calls) => {
-  //
-  // }
 }
 
 export default Store;

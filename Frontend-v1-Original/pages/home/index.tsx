@@ -1,6 +1,5 @@
 import { useRouter } from "next/router";
 import { Typography, Button, Grid } from "@mui/material";
-
 import { useScrollTo } from "react-use-window-scroll";
 
 function Home() {
@@ -9,7 +8,7 @@ function Home() {
   const scrollTo = useScrollTo();
 
   return (
-    <div className="relative mt-0 flex h-full w-full flex-col pt-20 lg:pt-28">
+    <div className="relative mt-0 flex h-full w-full flex-col pt-8">
       <div className="w-100 relative h-screen">
         <Grid
           container
@@ -36,7 +35,7 @@ function Home() {
             <Grid container spacing={2}>
               <Grid item lg={6} md={6} sm={12} xs={12}>
                 <Button
-                  className="relative bottom-0 min-w-full animate-titleAnim bg-[#212b48] pl-3 pt-5 pr-[10px] pb-5 font-['Monument'] capitalize text-[#7e99b0] delay-[400ms] max-md:float-none max-md:m-0 max-md:w-full"
+                  className="relative bottom-0 min-w-full animate-titleAnim bg-deepBlue pl-3 pt-5 pr-[10px] pb-5 font-['Monument'] capitalize text-secondaryGray delay-[400ms] max-md:float-none max-md:m-0 max-md:w-full"
                   onClick={() =>
                     scrollTo({ top: 1000, left: 0, behavior: "smooth" })
                   }
@@ -78,9 +77,9 @@ function Home() {
             >
               Velocimeter officially launched in January 2023 with a collective
               goal of fair and balanced access to DeFi. Velocimeter is a
-              decentralized exchange that has launched on the Arbitrum network
-              with low fees, near 0 slippage on correlated assets and a strong
-              focus on secondary markets for tokenized locks as NFT&apos;s.
+              decentralized exchange that has launched on the Canto network with
+              low fees, near 0 slippage on correlated assets and a strong focus
+              on secondary markets for tokenized locks as NFTs.
             </Typography>
             <Typography
               variant="body2"
