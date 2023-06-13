@@ -203,6 +203,7 @@ export default function Votes() {
 
   const onVote = () => {
     setVoteLoading(true);
+    console.log(token);
     stores.dispatcher.dispatch({
       type: ACTIONS.VOTE,
       content: { votes, tokenID: token.id },
@@ -386,7 +387,7 @@ export default function Votes() {
         <div className={classes.descriptionBox}>
           <Typography variant="h1">Vote</Typography>
           <Typography variant="body2">
-            Select your veNFT and use 100% of your votes for one or more pools
+            Select your vestETH and use 100% of your votes for one or more pools
             to earn bribes and trading fees (
             <span className="text-cantoGreen">
               ${formatCurrency(bribesAccrued)}
@@ -418,7 +419,7 @@ export default function Votes() {
               className={classes.searchContainer}
               variant="outlined"
               fullWidth
-              placeholder="CANTO, NOTE, 0x..."
+              placeholder="ETH, USDC, 0x..."
               value={search}
               onChange={onSearchChanged}
               InputProps={{

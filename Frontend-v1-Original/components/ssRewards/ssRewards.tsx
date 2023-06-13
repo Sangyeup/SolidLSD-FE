@@ -258,7 +258,7 @@ export default function Rewards() {
       <div className={classes.descriptionBox}>
         <Typography variant="h1">Rewards</Typography>
         <Typography variant="body2">
-          Choose your veFLOW and claim your rewards.
+          Choose your vestETH and claim your rewards.
         </Typography>
       </div>
       <div className={classes.toolbarContainer}>

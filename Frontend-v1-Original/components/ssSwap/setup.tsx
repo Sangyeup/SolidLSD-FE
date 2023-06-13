@@ -64,18 +64,10 @@ function Setup() {
   const [slippageError] = useState(false);
 
   const [quoteError, setQuoteError] = useState<string | null | false>(null);
-  const [quote, setQuote] = useState<QuoteSwapResponse | null>(null);
+  const [quote, setQuote] = useState(null);
 
   const [tokenPrices, setTokenPrices] = useState<Map<string, number>>();
 
-  const isWrapUnwrap =
-    (fromAssetValue?.symbol === "WCANTO" && toAssetValue?.symbol === "CANTO") ||
-    (fromAssetValue?.symbol === "CANTO" && toAssetValue?.symbol === "WCANTO") ||
-    (fromAssetValue?.symbol === "CANTO" && toAssetValue?.symbol === "CANTOE") ||
-    (fromAssetValue?.symbol === "CANTOE" && toAssetValue?.symbol === "CANTO")
-      ? true
-      : false;
-  const isWrap = fromAssetValue?.symbol === "CANTO";
 
   const usdDiff = useMemo(() => {
     if (
@@ -119,8 +111,8 @@ function Setup() {
       setQuoteLoading(false);
     };
 
-    const quoteReturned = (val: QuoteSwapResponse) => {
-      if (!val || !fromAssetValue || !toAssetValue) {
+    const quoteReturned = (val) => {
+      if (!val) {
         setQuoteLoading(false);
         setQuote(null);
         setToAmountValue("");
@@ -131,25 +123,15 @@ function Setup() {
         return;
       }
       if (
-        val &&
-        val.encodedData &&
-        val.maxReturn &&
-        val.maxReturn.totalFrom ===
-          BigNumber(fromAmountValue)
-            .multipliedBy(10 ** fromAssetValue.decimals)
-            .toFixed(0) &&
-        (val.maxReturn.from.toLowerCase() ===
-          fromAssetValue.address.toLowerCase() ||
-          (val.maxReturn.from ===
-            "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" &&
-            fromAssetValue.address === NATIVE_TOKEN.address)) &&
-        (val.maxReturn.to.toLowerCase() ===
-          toAssetValue.address.toLowerCase() ||
-          (val.maxReturn.to === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" &&
-            toAssetValue.address === NATIVE_TOKEN.address))
+	  val &&
+          val.inputs &&
+          val.output &&
+          val.inputs.fromAmount === fromAmountValue &&
+          val.inputs.fromAsset.address === fromAssetValue.address &&
+          val.inputs.toAsset.address === toAssetValue.address
       ) {
         setQuoteLoading(false);
-        if (BigNumber(val.maxReturn.totalTo).eq(0)) {
+        if (BigNumber(val.output.finalValue).eq(0)) {
           setQuote(null);
           setToAmountValue("");
           setToAmountValueUsd("");
@@ -159,18 +141,13 @@ function Setup() {
           return;
         }
 
-        setToAmountValue(
-          BigNumber(val.maxReturn.totalTo)
-            .div(10 ** toAssetValue.decimals)
-            .toFixed(toAssetValue.decimals, BigNumber.ROUND_DOWN)
-        );
+        setToAmountValue(BigNumber(val.output.finalValue).toFixed(8));
         const toAddressLookUp =
-          val.maxReturn.to === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          val.inputs.toAsset.address === "ETH"
             ? W_NATIVE_ADDRESS.toLowerCase()
-            : val.maxReturn.to.toLowerCase();
-        const toUsdValue = BigNumber(val.maxReturn.totalTo)
-          .div(10 ** toAssetValue.decimals)
-          .multipliedBy(tokenPrices?.get(toAddressLookUp) ?? 0)
+            : val.inputs.toAsset.address.toLowerCase();
+        const toUsdValue = BigNumber(val.output.finalValue)
+          .multipliedBy(tokenPrices.get(toAddressLookUp))
           .toFixed(2);
         setToAmountValueUsd(toUsdValue);
         setQuote(val);
@@ -225,9 +202,8 @@ function Setup() {
     stores.emitter.on(ACTIONS.UPDATED, ssUpdated);
     stores.emitter.on(ACTIONS.SWAP_RETURNED, swapReturned);
     stores.emitter.on(ACTIONS.QUOTE_SWAP_RETURNED, quoteReturned);
-    stores.emitter.on(ACTIONS.SWAP_ASSETS_UPDATED, assetsUpdated);
-    // stores.emitter.on(ACTIONS.BASE_ASSETS_UPDATED, assetsUpdated);
-    stores.emitter.on(ACTIONS.WRAP_UNWRAP_RETURNED, swapReturned);
+    //stores.emitter.on(ACTIONS.SWAP_ASSETS_UPDATED, assetsUpdated);
+    stores.emitter.on(ACTIONS.BASE_ASSETS_UPDATED, assetsUpdated);
 
     ssUpdated();
 
@@ -239,18 +215,17 @@ function Setup() {
       stores.emitter.removeListener(ACTIONS.ERROR, errorReturned);
       stores.emitter.removeListener(ACTIONS.UPDATED, ssUpdated);
       stores.emitter.removeListener(ACTIONS.SWAP_RETURNED, swapReturned);
-      stores.emitter.removeListener(ACTIONS.WRAP_UNWRAP_RETURNED, swapReturned);
       stores.emitter.removeListener(ACTIONS.QUOTE_SWAP_RETURNED, quoteReturned);
-      stores.emitter.removeListener(ACTIONS.SWAP_ASSETS_UPDATED, assetsUpdated);
+      //stores.emitter.removeListener(ACTIONS.SWAP_ASSETS_UPDATED, assetsUpdated);
       clearInterval(interval);
     };
   }, [
     fromAmountValue,
     fromAssetValue,
     toAssetValue,
-    slippage,
-    loading,
-    quoteLoading,
+    //slippage,
+    //loading,
+    //quoteLoading,
   ]);
 
   const onAssetSelect = (type: string, value: BaseAsset) => {
@@ -357,20 +332,6 @@ function Setup() {
       setQuoteLoading(true);
       setQuoteError(false);
 
-      const isWrapUnwrap =
-        (from?.symbol === "WCANTO" && to?.symbol === "CANTO") ||
-        (from?.symbol === "CANTO" && to?.symbol === "WCANTO") ||
-        (from?.symbol === "CANTO" && to?.symbol === "CANTOE") ||
-        (from?.symbol === "CANTOE" && to?.symbol === "CANTO")
-          ? true
-          : false;
-
-      if (isWrapUnwrap) {
-        setQuoteLoading(false);
-        setQuote(null);
-        setToAmountValue(amount);
-        return;
-      }
 
       stores.dispatcher.dispatch({
         type: ACTIONS.QUOTE_SWAP,
@@ -441,71 +402,20 @@ function Setup() {
 
     if (!error) {
       setLoading(true);
-
       stores.dispatcher.dispatch({
         type: ACTIONS.SWAP,
         content: {
           fromAsset: fromAssetValue,
           toAsset: toAssetValue,
-          quote,
-        },
-      });
-    }
-  };
-
-  const onWrapUnwrap = () => {
-    setFromAmountError(false);
-    setFromAssetError(false);
-    setToAssetError(false);
-
-    let error = false;
-
-    if (!fromAmountValue || fromAmountValue === "" || isNaN(+fromAmountValue)) {
-      setFromAmountError("From amount is required");
-      error = true;
-    } else {
-      if (
-        !fromAssetValue?.balance ||
-        isNaN(+fromAssetValue?.balance) || // TODO probably dont neet it
-        BigNumber(fromAssetValue?.balance).lte(0)
-      ) {
-        setFromAmountError("Invalid balance");
-        error = true;
-      } else if (BigNumber(fromAmountValue).lt(0)) {
-        setFromAmountError("Invalid amount");
-        error = true;
-      } else if (
-        fromAssetValue &&
-        BigNumber(fromAmountValue).gt(fromAssetValue.balance)
-      ) {
-        setFromAmountError(`Greater than your available balance`);
-        error = true;
-      }
-    }
-
-    if (!fromAssetValue || fromAssetValue === null) {
-      setFromAssetError("From asset is required");
-      error = true;
-    }
-
-    if (!toAssetValue || toAssetValue === null) {
-      setFromAssetError("To asset is required");
-      error = true;
-    }
-
-    if (!error) {
-      setLoading(true);
-
-      stores.dispatcher.dispatch({
-        type: ACTIONS.WRAP_UNWRAP,
-        content: {
-          fromAsset: fromAssetValue,
-          toAsset: toAssetValue,
           fromAmount: fromAmountValue,
-        },
+          toAmount: toAmountValue,
+          quote: quote,
+          slippage: slippage,
+	},
       });
     }
   };
+
 
   const setBalance100 = () => {
     if (!fromAssetValue || fromAssetValue.balance === null) return;
@@ -586,9 +496,6 @@ function Setup() {
           </Typography>
           <div className="grid w-full grid-cols-2 gap-3">
             <div className="flex flex-col items-center justify-center py-6 px-0">
-              <Typography className="pb-[6px] text-sm font-bold">
-                {isWrapUnwrap ? "1.00" : "0.00"}
-              </Typography>
               <Typography className="text-xs text-secondaryGray">
                 {toAssetValue && fromAssetValue
                   ? `${fromAssetValue?.symbol} per ${toAssetValue?.symbol}`
@@ -596,9 +503,6 @@ function Setup() {
               </Typography>
             </div>
             <div className="flex flex-col items-center justify-center py-6 px-0">
-              <Typography className="pb-[6px] text-sm font-bold">
-                {isWrapUnwrap ? "1.00" : "0.00"}
-              </Typography>
               <Typography className="text-xs text-secondaryGray">
                 {toAssetValue && fromAssetValue
                   ? `${toAssetValue?.symbol} per ${fromAssetValue?.symbol}`
@@ -607,16 +511,15 @@ function Setup() {
             </div>
           </div>
           <div className="flex w-full items-center justify-between">
-            <div className="text-sm font-bold text-gray-400">Show Routes</div>
           </div>
         </div>
       );
     }
     const totalFromInEth = fromAssetValue
-      ? BigNumber(quote.maxReturn.totalFrom).div(10 ** fromAssetValue.decimals)
+      ? BigNumber(quote.inputs.fromAmount)
       : BigNumber(0);
     const totalToInEth = toAssetValue
-      ? BigNumber(quote.maxReturn.totalTo).div(10 ** toAssetValue.decimals)
+      ? BigNumber(quote.output.finalValue)
       : BigNumber(0);
     return (
       <div className="mt-3 flex w-full flex-wrap items-center rounded-[10px] p-3">
@@ -651,9 +554,6 @@ function Setup() {
             <div className="grid w-full grid-cols-1">
               <div className="flex flex-col items-center justify-center py-6 px-0 text-sm font-bold text-red-500">
                 Potential low liquidity swap!{" "}
-                {usdDiff !== ""
-                  ? `Price difference is ${usdDiff}%`
-                  : "Double check Price Info above"}
               </div>
             </div>
           </>
@@ -662,9 +562,6 @@ function Setup() {
           className="flex w-full cursor-pointer items-center justify-between"
           onClick={() => setRoutesOpen(true)}
         >
-          <div className="text-sm font-bold text-cantoGreen underline transition-all hover:text-green-300 hover:no-underline">
-            Show Routes
-          </div>
         </div>
       </div>
     );
@@ -852,50 +749,18 @@ function Setup() {
             size="large"
             color="primary"
             className="bg-primaryBg font-bold text-cantoGreen hover:bg-green-900"
-            disabled={loading || quoteLoading || (!quote && !isWrapUnwrap)}
-            onClick={!isWrapUnwrap ? onSwap : onWrapUnwrap}
+            disabled={loading || quoteLoading || !quote}
+            onClick={onSwap}
           >
             <Typography className="font-bold capitalize">
-              {loading
-                ? `Loading`
-                : isWrapUnwrap
-                ? isWrap
-                  ? "Wrap"
-                  : "Unwrap"
-                : `Swap`}
+              {loading ? `Swapping` : `Swap`}
             </Typography>
             {loading && (
               <CircularProgress size={10} className="ml-2 fill-white" />
             )}
           </Button>
         </div>
-        <div className="mt-2 text-end text-xs">
-          <span className="align-middle text-secondaryGray">Powered by </span>
-          <a
-            href="https://firebird.finance/"
-            target="_blank"
-            rel="noreferrer noopener"
-            className="cursor-pointer grayscale transition-all hover:text-[#f66432] hover:grayscale-0"
-          >
-            <img
-              src="/images/logo-firebird.svg"
-              className="inline"
-              alt="firebird protocol logo"
-            />{" "}
-            <span className="align-middle">Firebird</span>
-          </a>
-        </div>
       </div>
-      <RoutesDialog
-        onClose={() => setRoutesOpen(false)}
-        open={routesOpen}
-        paths={quote?.maxReturn.paths}
-        tokens={quote?.maxReturn.tokens}
-        fromAssetValue={fromAssetValue}
-        fromAmountValue={fromAmountValue}
-        toAssetValue={toAssetValue}
-        toAmountValue={toAmountValue}
-      />
     </>
   );
 }
@@ -1001,7 +866,7 @@ function AssetSelect({
       >
         <div className="relative mr-3 w-14">
           <img
-            className="h-full w-full rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[rgb(33,43,72)] p-[6px]"
+            className="h-full w-full rounded-[30px] border border-[rgba(211, 50, 219,0.5)] bg-[rgb(33,43,72)] p-[6px]"
             alt=""
             src={asset ? `${asset.logoURI}` : ""}
             height="60px"
@@ -1050,7 +915,7 @@ function AssetSelect({
       >
         <div className="relative mr-3 w-14">
           <img
-            className="h-full w-full rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[rgb(33,43,72)] p-[6px]"
+            className="h-full w-full rounded-[30px] border border-[rgba(211, 50, 219,0.5)] bg-[rgb(33,43,72)] p-[6px]"
             alt=""
             src={asset ? `${asset.logoURI}` : ""}
             height="60px"
@@ -1125,7 +990,7 @@ function AssetSelect({
             autoFocus
             variant="outlined"
             fullWidth
-            placeholder="CANTO, NOTE, 0x..."
+            placeholder="stETH, USDC, 0x..."
             value={search}
             onChange={onSearchChanged}
             InputProps={{
@@ -1172,7 +1037,7 @@ function AssetSelect({
       >
         <div className="relative w-full cursor-pointer">
           <img
-            className="h-full w-full rounded-[50px] border border-[rgba(126,153,153,0.5)] bg-[#032725] p-[10px]"
+            className="h-full w-full rounded-[50px] border border-[rgba(211, 50, 219,0.5)] bg-[#032725] p-[10px]"
             alt=""
             src={value ? `${value.logoURI}` : ""}
             height="100px"
@@ -1230,7 +1095,7 @@ function RoutesDialog({
           <div className="flex w-full items-center justify-between">
             <div>
               <img
-                className="inline-block h-12 rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[#032725] p-[6px]"
+                className="inline-block h-12 rounded-[30px] border border-[rgba(211, 50, 219,0.5)] bg-[#032725] p-[6px]"
                 alt=""
                 src={fromAssetValue ? `${fromAssetValue.logoURI}` : ""}
                 height="40px"
@@ -1249,7 +1114,7 @@ function RoutesDialog({
                 {formatCurrency(toAmountValue)} {toAssetValue.symbol}
               </span>
               <img
-                className="inline-block h-12 rounded-[30px] border border-[rgba(126,153,153,0.5)] bg-[#032725] p-[6px]"
+                className="inline-block h-12 rounded-[30px] border border-[rgba(211, 50, 219,0.5)] bg-[#032725] p-[6px]"
                 alt=""
                 src={toAssetValue ? `${toAssetValue.logoURI}` : ""}
                 height="40px"

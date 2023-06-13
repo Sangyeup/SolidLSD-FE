@@ -33,7 +33,7 @@ export interface MyAppProps extends AppProps {
   emotionCache?: EmotionCache;
 }
 
-console.log("<<<<<<<<<<<<< flow >>>>>>>>>>>>>");
+console.log("<<<<<<<<<<<<< SOLIDLSD >>>>>>>>>>>>>");
 
 export default function MyApp({
   Component,
@@ -64,7 +64,7 @@ export default function MyApp({
     <CacheProvider value={emotionCache}>
       <QueryClientProvider client={queryClient}>
         <Head>
-          <title>Velocimeter</title>
+          <title>SOLIDLSD</title>
           <meta
             name="viewport"
             content="minimum-scale=1, initial-scale=1, width=device-width"
@@ -75,7 +75,7 @@ export default function MyApp({
             <RainbowKitProvider
               chains={chains}
               theme={rainbowKitDarkTheme({
-                accentColor: "rgb(0, 243, 203)",
+                accentColor: "rgb(234, 5, 242)",
                 accentColorForeground: "#222222",
                 borderRadius: "small",
                 fontStack: "rounded",

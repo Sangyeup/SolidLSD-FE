@@ -43,10 +43,10 @@ module.exports = {
           "slideLeftAndFade 300ms cubic-bezier(0.16, 1, 0.3, 1)",
       },
       colors: {
-        cantoGreen: "#06fc99",
-        secondaryGray: "#7e99b0",
-        primaryBg: "#272826",
-        deepBlue: "#212b48",
+        cantoGreen: "#cf16d9",
+        secondaryGray: "#75617d",
+        primaryBg: "#2a292b",
+        deepBlue: "#661254",
         deepPurple: "#040105",
       },
       boxShadow: {

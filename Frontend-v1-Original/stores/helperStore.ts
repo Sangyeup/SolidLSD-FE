@@ -1,4 +1,5 @@
 import { getContract, formatUnits, parseUnits } from "viem";
+import BigNumber from "bignumber.js";
 
 import viemClient from "./connectors/viem";
 import { CONTRACTS } from "./constants/constants";
@@ -10,7 +11,7 @@ import {
 
 import stores from ".";
 
-const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "42161";
+const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "5";
 const WEEK = 604800;
 
 // # See: https://docs.1inch.io/docs/aggregation-protocol/api/swagger
@@ -88,9 +89,7 @@ class Helper {
       totalSupply,
       lockedSupply,
       flowInMinter,
-      flowInMsig,
       flowInRewardsDistributor,
-      flowInTimelockerController,
     ] = await viemClient.multicall({
       allowFailure: false,
       contracts: [
@@ -111,28 +110,16 @@ class Helper {
         {
           ...flowContract,
           functionName: "balanceOf",
-          args: [CONTRACTS.MSIG_ADDRESS],
-        },
-        {
-          ...flowContract,
-          functionName: "balanceOf",
           args: [CONTRACTS.VE_DIST_ADDRESS],
-        },
-        {
-          ...flowContract,
-          functionName: "balanceOf",
-          args: ["0xd0cC9738866cd82B237A14c92ac60577602d6c18"],
         },
       ],
     });
 
     const circulatingSupply = formatUnits(
-      totalSupply -
-        lockedSupply -
-        flowInMinter -
-        flowInMsig -
-        flowInRewardsDistributor -
-        flowInTimelockerController,
+      BigNumber(totalSupply) -
+        BigNumber(lockedSupply) -
+        BigNumber(flowInMinter) -
+        BigNumber(flowInRewardsDistributor) -
       CONTRACTS.GOV_TOKEN_DECIMALS
     );
 

@@ -24,7 +24,7 @@ function Swap() {
               className="my-7 mx-auto max-w-3xl text-center text-base text-secondaryGray sm:text-lg"
               variant="body2"
             >
-              Swap between Velocimeter supported stable and volatile assets.
+              Swap between SolidLSD supported stable and volatile assets.
             </Typography>
           </div>
         </Paper>

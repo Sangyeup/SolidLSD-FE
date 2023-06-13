@@ -66,22 +66,8 @@ export default function Info() {
         <span className="tracking-tighter">${formatFinancialData(tvl)}</span>
       </div>
       <div>
-        <span className="font-normal">TBV: </span>
-        <span className="tracking-tighter">${formatFinancialData(tbv)}</span>
-      </div>
-      <div>
-        <span className="font-normal">$FLOW price: </span>
+        <span className="font-normal">$stETH price: </span>
         <span className="tracking-tighter">${flowPrice.toFixed(3)}</span>
-      </div>
-      <div>
-        <span className="font-normal">MCap: </span>
-        <span className="tracking-tighter">${formatFinancialData(mCap)}</span>
-      </div>
-      <div>
-        <span className="font-normal">Circulating Supply: </span>
-        <span className="tracking-tighter">
-          {formatFinancialData(circulatingSupply)}
-        </span>
       </div>
       <Timer deadline={updateDate} />
     </div>

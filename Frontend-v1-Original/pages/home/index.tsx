@@ -20,7 +20,7 @@ function Home() {
               variant="h1"
               className="relative bottom-0 mb-5 animate-titleAnim font-['Monument'] text-lg font-thin uppercase tracking-wider text-cantoGreen delay-[0s]"
             >
-              Canto Liquidity Layer
+              SolidLSD
             </Typography>
           </Grid>
           <Grid item lg={12} md={12} sm={12} xs={12}>
@@ -28,7 +28,9 @@ function Home() {
               variant="h1"
               className="relative bottom-0 mb-6 animate-titleAnim text-center font-['Monument'] text-3xl delay-200 sm:text-4xl md:mb-8 md:text-6xl"
             >
-              Low cost stable coin swaps
+              Combination of
+	    <p></p>
+	      ve(3,3) and LSD
             </Typography>
           </Grid>
           <Grid item lg={12} md={12} sm={12} xs={12}>
@@ -67,7 +69,7 @@ function Home() {
               variant="h1"
               className="mb-5 text-center font-['Monument'] text-lg sm:text-3xl"
             >
-              Welcome to Velocimeter
+              Welcome to SolidLSD
             </Typography>
           </Grid>
           <Grid item lg={12} md={12} sm={12} xs={12}>
@@ -75,20 +77,11 @@ function Home() {
               variant="body1"
               className="mb-5 text-sm text-white sm:text-base md:text-lg"
             >
-              Velocimeter officially launched in January 2023 with a collective
-              goal of fair and balanced access to DeFi. Velocimeter is a
-              decentralized exchange that has launched on the Canto network with
-              low fees, near 0 slippage on correlated assets and a strong focus
-              on secondary markets for tokenized locks as NFTs.
             </Typography>
             <Typography
               variant="body2"
               className="mb-5 text-xs text-[#f2f2f2] sm:text-sm md:text-base"
             >
-              One segment of the cryptocurrency landscape that has shown
-              incredible potential is the swapping of stablecoins and volatile
-              assets. Velocimeter Swap offers users quick, seamless and cheap
-              transactions while utilizing strategies to maximize their yield.
             </Typography>
           </Grid>
           <Grid item lg={12} md={12} sm={12} xs={12}>

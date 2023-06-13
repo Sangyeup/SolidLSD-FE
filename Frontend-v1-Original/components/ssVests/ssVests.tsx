@@ -6,7 +6,6 @@ import stores from "../../stores";
 import { ACTIONS } from "../../stores/constants/constants";
 import { GovToken, VestNFT, VeToken } from "../../stores/types/types";
 
-import PartnersVests from "./partnersVests";
 import VestsTable from "./ssVestsTable";
 
 export default function Vests() {
@@ -67,13 +66,12 @@ export default function Vests() {
       <div className="flex flex-col gap-1 self-start text-left">
         <Typography variant="h1">Vest</Typography>
         <Typography variant="body2">
-          Lock FLOW into veFLOW to earn and govern. Vote with veFLOW to earn
-          bribes and trading fees. veFLOW can be transferred, merged and split.
+          Lock stETH into vestETH to earn and govern. Vote with vestETH to earn
+          bribes and trading fees. vestETH can be transferred, merged and split.
           You can hold multiple positions.
         </Typography>
       </div>
       <VestsTable vestNFTs={vestNFTs} govToken={govToken} veToken={veToken} />
-      <PartnersVests />
     </div>
   );
 }

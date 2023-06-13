@@ -1247,7 +1247,7 @@ export default function LiquidityManage() {
         </div>
         <div className="flex min-h-[100px] items-center justify-center">
           <Typography className="border border-cantoGreen bg-[#0e110c] p-6 text-sm font-extralight">
-            We are very sad to see you are no longer going with the FLOW
+            We are very sad to see you are no longer going with the SolidLSD
           </Typography>
         </div>
       </div>
@@ -2052,7 +2052,7 @@ function AssetSelect({
             autoFocus
             variant="outlined"
             fullWidth
-            placeholder="CANTO, NOTE, 0x..."
+            placeholder="ETH, USDC, 0x..."
             value={search}
             onChange={onSearchChanged}
             InputProps={{
@@ -2091,7 +2091,7 @@ function AssetSelect({
             autoFocus
             variant="outlined"
             fullWidth
-            placeholder="CANTO, NOTE, 0x..."
+            placeholder="ETH, USDC, 0x..."
             value={search}
             onChange={onSearchChanged}
             InputProps={{

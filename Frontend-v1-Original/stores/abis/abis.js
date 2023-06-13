@@ -6,14 +6,11 @@ import { routerABI } from "./routerABI";
 import { voterABI } from "./voterABI";
 import { gaugeABI } from "./gaugeABI";
 import { bribeABI } from "./bribeABI";
-import { bribeFactoryABI } from "./bribeFactoryABI";
 import { tokenABI } from "./tokenABI";
 import { veDistABI } from "./veDistABI";
 import { minterABI } from "./minterABI";
 import { wethABI } from "./wethABI";
-import { flowConvertorABI } from "./flowConvertorABI";
-import { autoBribeABI } from "./autoBribeABI";
-import { fairAuctionABI } from "./fairAuctionABI";
+import { wethImplABI } from "./wethImplABI";
 
 export default {
   erc20ABI,
@@ -23,13 +20,10 @@ export default {
   routerABI,
   voterABI,
   bribeABI,
-  bribeFactoryABI,
   gaugeABI,
   veDistABI,
   tokenABI,
   minterABI,
   wethABI,
-  flowConvertorABI,
-  autoBribeABI,
-  fairAuctionABI,
+  wethImplABI,
 };

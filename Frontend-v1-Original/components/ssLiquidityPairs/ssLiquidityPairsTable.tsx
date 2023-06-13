@@ -212,7 +212,7 @@ const EnhancedTableToolbar = ({
             className="flex w-full flex-[1]"
             variant="outlined"
             fullWidth
-            placeholder="CANTO, NOTE, 0x..."
+            placeholder="ETH, USDC, 0x..."
             value={search}
             onChange={onSearchChanged}
             InputProps={{
@@ -225,7 +225,7 @@ const EnhancedTableToolbar = ({
           />
         </div>
         <ul className="flex flex-wrap gap-2 xs:flex-nowrap">
-          {["all", "boosted", "deposited", "stable", "volatile"].map(
+          {["all", "deposited", "stable", "volatile"].map(
             (filterOption) => (
               <li key={filterOption}>
                 <input
@@ -878,7 +878,7 @@ function Row(props: { row: Pair; onView: (_row: Pair) => void }) {
               </Tooltip>
             )}
             <Typography variant="h2" className="text-xs font-extralight">
-              {(row.apr + row.oblotr_apr).toFixed(2)}%
+              {'<1'}%
             </Typography>
           </div>
         </TableCell>

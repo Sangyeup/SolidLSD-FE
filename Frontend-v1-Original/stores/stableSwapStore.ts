@@ -15,7 +15,7 @@ import {
   isAddress,
   BaseError,
 } from "viem";
-import { canto } from "viem/chains";
+import { goerli } from "viem/chains";
 import { getAccount, getWalletClient } from "@wagmi/core";
 
 import { Dispatcher } from "flux";
@@ -23,8 +23,7 @@ import { Dispatcher } from "flux";
 import { queryClient } from "../pages/_app";
 import { formatCurrency } from "../utils/utils";
 
-import tokenlistArb from "../mainnet-arb-token-list.json";
-import tokenlistCan from "../mainnet-canto-token-list.json";
+import tokenlistArb from "../goerli-arb-token-list.json";
 
 import {
   ACTIONS,
@@ -58,11 +57,10 @@ import {
 
 import stores from ".";
 
-const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "42161";
+const isArbitrum = process.env.NEXT_PUBLIC_CHAINID === "5";
 
 const tokenlist = isArbitrum ? tokenlistArb : tokenlistCan;
 
-const CANTO_OPTION_TOKEN = "0x9f9A1Aa08910867F38359F4287865c4A1162C202";
 class Store {
   dispatcher: Dispatcher<any>;
   emitter: EventEmitter;
@@ -78,7 +76,6 @@ class Store {
       xBribes: Gauge[];
       xxBribes: Gauge[];
       rewards: Gauge[];
-      BLOTR_rewards: Gauge[];
       veDist: VeDistReward[];
     };
     updateDate: number;
@@ -105,7 +102,6 @@ class Store {
         xBribes: [],
         xxBribes: [],
         rewards: [],
-        BLOTR_rewards: [],
         veDist: [],
       },
       updateDate: 0,
@@ -234,9 +230,6 @@ class Store {
 
           case ACTIONS.CLAIM_REWARD:
             this.claimRewards(payload);
-            break;
-          case ACTIONS.CLAIM_BLOTR_REWARD:
-            this.claimBlotrRewards(payload);
             break;
           case ACTIONS.CLAIM_VE_DIST:
             this.claimVeDist(payload);
@@ -530,6 +523,7 @@ class Store {
         abi: CONTRACTS.PAIR_ABI,
         address: pairAddress,
       } as const;
+
       const gaugesContract = {
         abi: CONTRACTS.VOTER_ABI,
         address: CONTRACTS.VOTER_ADDRESS,
@@ -684,7 +678,6 @@ class Store {
           local: false,
         },
         apr: 0,
-        oblotr_apr: 0,
         total_supply: 0,
         token0_address: token0,
         token1_address: token1,
@@ -1488,7 +1481,7 @@ class Store {
       this.setStore({ govToken: this._getGovTokenBase() });
       this.setStore({ veToken: this._getVeTokenBase() });
       this.setStore({ baseAssets: await this._getBaseAssets() });
-      // this.setStore({ routeAssets: await this._getRouteAssets() }); // We dont need it because we use firebird router
+      this.setStore({ routeAssets: await this._getRouteAssets() }); // We dont need it because we use firebird router
       this.setStore({ pairs: await this._getPairs() });
       this.setStore({ swapAssets: this._getSwapAssets() });
       this.setStore({ updateDate: await stores.helper.getActivePeriod() });
@@ -1501,7 +1494,6 @@ class Store {
 
       this.emitter.emit(ACTIONS.UPDATED);
       this.emitter.emit(ACTIONS.CONFIGURED_SS);
-
       setTimeout(() => {
         this.dispatcher.dispatch({ type: ACTIONS.GET_BALANCES });
       }, 1);
@@ -1525,7 +1517,6 @@ class Store {
       // const baseAssetsCall = await response.json()
 
       let baseAssets = tokenlist;
-
       const set = new Set<string>(baseAssets.map((asset) => asset.address));
       if (!set.has(NATIVE_TOKEN.address)) baseAssets.unshift(NATIVE_TOKEN);
 
@@ -1552,13 +1543,10 @@ class Store {
   _getPairs = async () => {
     try {
       const response = await fetch(`/api/pairs`);
-
       const pairsCall = await response.json();
-
       this.setStore({ tokenPrices: new Map(pairsCall.prices) });
       this.setStore({ tvl: pairsCall.tvl });
       this.setStore({ tbv: pairsCall.tbv });
-
       return pairsCall.data;
     } catch (ex) {
       console.log(ex);
@@ -1736,7 +1724,7 @@ class Store {
 
       this.setStore({ govToken });
       this.emitter.emit(ACTIONS.UPDATED);
-
+      
       this._getVestNFTs(address);
     } catch (ex) {
       console.log(ex);
@@ -1864,12 +1852,6 @@ class Store {
             functionName: "left",
             args: [CONTRACTS.GOV_TOKEN_ADDRESS],
           },
-          {
-            address: pair.gauge.address,
-            abi: CONTRACTS.GAUGE_ABI,
-            functionName: "left",
-            args: [CANTO_OPTION_TOKEN],
-          },
         ] as const;
       });
       const gaugesCallsChunks = chunkArray(gaugesCalls);
@@ -1881,7 +1863,6 @@ class Store {
         try {
           if (hasGauge(pair)) {
             const isAliveGauge = gaugesAliveData[outerIndex];
-
             const [
               totalSupply,
               gaugeBalance,
@@ -1889,27 +1870,10 @@ class Store {
               flowLeft,
               optionLeft,
             ] = gaugesData.slice(outerIndex * 5, outerIndex * 5 + 5);
-
-            const bribes = pair.gauge.bribes.map((bribe) => {
+	    const bribes = pair.gauge.bribes.map((bribe) => {
               bribe.rewardAmount = 0;
               return bribe;
             });
-            pair.gauge.xx_bribes.forEach((xx_bribe) => {
-              const bribe = bribes.find(
-                (b) => b.token.address === xx_bribe.token.address
-              );
-              if (bribe) {
-                bribe.rewardAmount = xx_bribe.rewardAmmount;
-              } else {
-                bribes.push({
-                  token: xx_bribe.token,
-                  rewardAmount: xx_bribe.rewardAmmount,
-                  reward_ammount: xx_bribe.rewardAmmount,
-                  rewardAmmount: xx_bribe.rewardAmmount,
-                });
-              }
-            });
-
             pair.gauge.balance = formatEther(gaugeBalance);
             pair.gauge.totalSupply = formatEther(totalSupply);
 
@@ -1939,7 +1903,6 @@ class Store {
             pair.isAliveGauge = isAliveGauge;
             if (isAliveGauge === false) pair.apr = 0;
             if (flowLeft === 0n) pair.apr = 0;
-            if (optionLeft === 0n) pair.oblotr_apr = 0;
 
             outerIndex++;
           }
@@ -2155,7 +2118,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -2440,7 +2403,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -2648,6 +2611,7 @@ class Store {
       // update pairs is same endpoint in API. Pairs are updated in sync on backend
       const response = await fetch(`/api/pairs`);
       const pairsCall = await response.json();
+      console.log(pairsCall);
       this.setStore({ pairs: pairsCall.data });
 
       await this._getPairInfo(address, pairsCall.data);
@@ -2683,7 +2647,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("walletClient not found");
         return null;
@@ -2843,7 +2807,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -2941,7 +2905,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -3380,7 +3344,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -3499,7 +3463,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -3632,7 +3596,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -3744,7 +3708,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -3779,29 +3743,292 @@ class Store {
     }
   };
 
-  quoteSwap = async (payload: {
-    type: string;
-    content: {
-      fromAsset: BaseAsset;
-      toAsset: BaseAsset;
-      fromAmount: string;
-      slippage: number;
-    };
-  }) => {
+  quoteSwap = async (payload) => {
     const address = getAccount().address;
     if (!address) throw new Error("no address");
     try {
-      const res = await fetch("/api/firebird-router", {
-        method: "POST",
-        body: JSON.stringify({
-          payload,
-          address,
-        }),
+      
+      // route assets are USDC, WCANTO and FLOW
+      const routeAssets = this.getStore("routeAssets");
+      const { fromAsset, toAsset, fromAmount } = payload.content;
+
+      const sendFromAmount = BigNumber(fromAmount)
+        .times(10 ** fromAsset.decimals)
+        .toFixed();
+
+      if (
+        !fromAsset ||
+        !toAsset ||
+        !fromAmount ||
+        !fromAsset.address ||
+        !toAsset.address ||
+        fromAmount === ""
+      ) {
+        return null;
+      }
+
+      let addy0 = fromAsset.address;
+      let addy1 = toAsset.address;
+
+      if (fromAsset.address === NATIVE_TOKEN.symbol) {
+        addy0 = W_NATIVE_ADDRESS;
+      }
+      if (toAsset.address === NATIVE_TOKEN.symbol) {
+        addy1 = W_NATIVE_ADDRESS;
+      }
+
+      const includesRouteAddress = routeAssets.filter((asset) => {
+        return (
+          asset.address.toLowerCase() == addy0.toLowerCase() ||
+          asset.address.toLowerCase() == addy1.toLowerCase()
+        );
       });
-      const resJson = (await res.json()) as QuoteSwapResponse;
 
-      const returnValue = resJson;
+      let amountOuts = [];
+      // FIXME we should have tryAggregate here so to filter not existing routes instead of this hardcore
+      if (includesRouteAddress.length === 0) {
+        amountOuts = routeAssets
+          .map((routeAsset) => {
+            if (routeAsset.symbol === "WCANTO") {
+              return [
+                // {
+                //   routes: [
+                //     {
+                //       from: addy0,
+                //       to: routeAsset.address,
+                //       stable: true,
+                //     },
+                //     {
+                //       from: routeAsset.address,
+                //       to: addy1,
+                //       stable: true,
+                //     },
+                //   ],
+                //   routeAsset: routeAsset,
+                // },
+                {
+                  routes: [
+                    {
+                      from: addy0,
+                      to: routeAsset.address,
+                      stable: false,
+                    },
+                    {
+                      from: routeAsset.address,
+                      to: addy1,
+                      stable: false,
+                    },
+                  ],
+                  routeAsset: routeAsset,
+                },
+                {
+                  routes: [
+                    {
+                      from: addy0,
+                      to: routeAsset.address,
+                      stable: true,
+                    },
+                    {
+                      from: routeAsset.address,
+                      to: addy1,
+                      stable: false,
+                    },
+                  ],
+                  routeAsset: routeAsset,
+                },
+                {
+                  routes: [
+                    {
+                      from: addy0,
+                      to: routeAsset.address,
+                      stable: false,
+                    },
+                    {
+                      from: routeAsset.address,
+                      to: addy1,
+                      stable: true,
+                    },
+                  ],
+                  routeAsset: routeAsset,
+                },
+              ];
+            }
+            return [
+              {
+                routes: [
+                  {
+                    from: addy0,
+                    to: routeAsset.address,
+                    stable: true,
+                  },
+                  {
+                    from: routeAsset.address,
+                    to: addy1,
+                    stable: true,
+                  },
+                ],
+                routeAsset: routeAsset,
+              },
+              {
+                routes: [
+                  {
+                    from: addy0,
+                    to: routeAsset.address,
+                    stable: false,
+                  },
+                  {
+                    from: routeAsset.address,
+                    to: addy1,
+                    stable: false,
+                  },
+                ],
+                routeAsset: routeAsset,
+              },
+              {
+                routes: [
+                  {
+                    from: addy0,
+                    to: routeAsset.address,
+                    stable: true,
+                  },
+                  {
+                    from: routeAsset.address,
+                    to: addy1,
+                    stable: false,
+                  },
+                ],
+                routeAsset: routeAsset,
+              },
+              {
+                routes: [
+                  {
+                    from: addy0,
+                    to: routeAsset.address,
+                    stable: false,
+                  },
+                  {
+                    from: routeAsset.address,
+                    to: addy1,
+                    stable: true,
+                  },
+                ],
+                routeAsset: routeAsset,
+              },
+            ];
+          })
+          .flat();
+      }
 
+      amountOuts.push({
+        routes: [
+          {
+            from: addy0,
+            to: addy1,
+            stable: true,
+          },
+        ],
+        routeAsset: null,
+      });
+
+      amountOuts.push({
+        routes: [
+          {
+            from: addy0,
+            to: addy1,
+            stable: false,
+          },
+        ],
+        routeAsset: null,
+      });
+
+      const amountsOutCalls = amountOuts.map((route) => {
+        return {
+            abi: CONTRACTS.ROUTER_ABI,
+            address: CONTRACTS.ROUTER_ADDRESS,
+            functionName: "getAmountsOut",
+	    args: [sendFromAmount, route.routes]
+          } as const;
+      });
+
+      const amountsOutCallsChunks = chunkArray(amountsOutCalls);
+      const receiveAmounts = await multicallChunks(amountsOutCallsChunks);
+      
+      for (let i = 0; i < receiveAmounts.length; i++) {
+        amountOuts[i].receiveAmounts = receiveAmounts[i];
+        amountOuts[i].finalValue = BigNumber(
+          receiveAmounts[i][receiveAmounts[i].length - 1]
+        )
+          .div(10 ** toAsset.decimals)
+          .toFixed(toAsset.decimals);
+      }
+
+      const bestAmountOut = amountOuts
+        .filter((ret) => {
+          return ret != null;
+        })
+        .reduce((best, current) => {
+          if (!best) {
+            return current;
+          }
+          return BigNumber(best.finalValue).gt(current.finalValue)
+            ? best
+            : current;
+        }, 0);
+
+      if (!bestAmountOut) {
+        this.emitter.emit(
+          ACTIONS.ERROR,
+          "No valid route found to complete swap"
+        );
+        return null;
+      }
+
+      let totalRatio = "1";
+
+      const routerContract = {
+        abi: CONTRACTS.ROUTER_ABI,
+        address: CONTRACTS.ROUTER_ADDRESS,
+      } as const;
+      
+      for (let i = 0; i < bestAmountOut.routes.length; i++) {
+        if (bestAmountOut.routes[i].stable == true) {
+        } else {
+          const reserves = await viemClient.readContract({
+        			...routerContract,
+        			functionName: "getReserves",
+        			args: 	[
+					bestAmountOut.routes[i].from, 
+					bestAmountOut.routes[i].to, 
+					bestAmountOut.routes[i].stable
+					]
+      				});
+	  let amountIn = "0";
+          let amountOut = "0";
+          if (i == 0) {
+            amountIn = sendFromAmount;
+            amountOut = bestAmountOut.receiveAmounts[i + 1];
+          } else {
+            amountIn = bestAmountOut.receiveAmounts[i];
+            amountOut = bestAmountOut.receiveAmounts[i + 1];
+          }
+          const amIn = BigNumber(amountIn).div(reserves[0]);
+          const amOut = BigNumber(amountOut).div(reserves[1]);
+          const ratio = BigNumber(amOut).div(amIn);
+
+          totalRatio = BigNumber(totalRatio).times(ratio).toFixed(18);
+        }
+      }
+      const priceImpact = BigNumber(1).minus(totalRatio).times(100).toFixed(18);
+
+      const returnValue = {
+        inputs: {
+          fromAmount: fromAmount,
+          fromAsset: fromAsset,
+          toAsset: toAsset,
+        },
+        output: bestAmountOut,
+        priceImpact: priceImpact,
+      };
       this.emitter.emit(ACTIONS.QUOTE_SWAP_RETURNED, returnValue);
     } catch (ex) {
       console.error(ex);
@@ -3810,28 +4037,17 @@ class Store {
     }
   };
 
-  swap = async (payload: {
-    type: string;
-    content: {
-      quote: QuoteSwapResponse;
-      fromAsset: BaseAsset;
-      toAsset: BaseAsset;
-    };
-  }) => {
+  swap = async (payload)  => { 
     try {
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
       }
 
       const [account] = await walletClient.getAddresses();
-
-      const { quote, fromAsset, toAsset } = payload.content;
-
-      const fromAmount = BigNumber(quote.maxReturn.totalFrom)
-        .div(10 ** fromAsset.decimals)
-        .toFixed(fromAsset.decimals);
+      const { fromAsset, toAsset, fromAmount, toAmount, quote, slippage } =
+        payload.content;
 
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       let allowanceTXID = this.getTXUUID();
@@ -3857,11 +4073,11 @@ class Store {
         ],
       });
 
-      let allowance: string | null = "0";
+      let allowance  = "0";
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
       if (fromAsset.address !== NATIVE_TOKEN.symbol) {
-        allowance = await this._getFirebirdSwapAllowance(
+        allowance = await this._getSwapAllowance(
           fromAsset,
           account,
           quote
@@ -3900,95 +4116,74 @@ class Store {
       }
 
       // SUBMIT SWAP TRANSACTION
-      if (
-        quote.maxReturn.from === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      ) {
-        try {
-          this.emitter.emit(ACTIONS.TX_PENDING, { uuid: swapTXID });
-          const txHash = await walletClient.sendTransaction({
-            account,
-            to: quote.encodedData.router,
-            value: BigInt(quote.maxReturn.totalFrom),
-            data: quote.encodedData.data,
-            gasPrice: BigInt(quote.maxReturn.gasPrice),
-            chain: canto,
-          });
-          const receipt = await viemClient.waitForTransactionReceipt({
-            hash: txHash,
-          });
-          if (receipt.status === "success") {
-            this.emitter.emit(ACTIONS.TX_CONFIRMED, {
-              uuid: swapTXID,
-              txHash: receipt.transactionHash,
-            });
-          }
-        } catch (error) {
-          if (!(error as Error).toString().includes("-32601")) {
-            if ((error as Error).message) {
-              this.emitter.emit(ACTIONS.TX_REJECTED, {
-                uuid: swapTXID,
-                error: this._mapError((error as Error).message),
-              });
-            }
-            this.emitter.emit(ACTIONS.TX_REJECTED, {
-              uuid: swapTXID,
-              error: error,
-            });
-          }
-        }
-      } else {
-        try {
-          this.emitter.emit(ACTIONS.TX_PENDING, { uuid: swapTXID });
-          const txHash = await walletClient.sendTransaction({
-            account,
-            to: quote.encodedData.router,
-            value: undefined,
-            data: quote.encodedData.data,
-            gasPrice: BigInt(quote.maxReturn.gasPrice),
-            chain: canto,
-          });
-          const receipt = await viemClient.waitForTransactionReceipt({
-            hash: txHash,
-          });
-          if (receipt.status === "success") {
-            this.emitter.emit(ACTIONS.TX_CONFIRMED, {
-              uuid: swapTXID,
-              txHash: receipt.transactionHash,
-            });
-          }
-        } catch (error) {
-          if (!(error as Error).toString().includes("-32601")) {
-            if ((error as Error).message) {
-              this.emitter.emit(ACTIONS.TX_REJECTED, {
-                uuid: swapTXID,
-                error: this._mapError((error as Error).message),
-              });
-            }
-            this.emitter.emit(ACTIONS.TX_REJECTED, {
-              uuid: swapTXID,
-              error: error,
-            });
-          }
-        }
+      const sendSlippage = BigNumber(100).minus(slippage).div(100);
+      const sendFromAmount = BigNumber(fromAmount)
+        .times(10 ** fromAsset.decimals)
+        .toFixed(0);
+      const sendMinAmountOut = BigNumber(quote.output.finalValue)
+        .times(10 ** toAsset.decimals)
+        .times(sendSlippage)
+        .toFixed(0);
+      const deadline = "" + moment().add(600, "seconds").unix();
+
+      const routerContract = {
+        abi: CONTRACTS.ROUTER_ABI,
+        address: CONTRACTS.ROUTER_ADDRESS,
+      } as const;
+
+      let func = "swapExactTokensForTokens";
+      let params = [
+        sendFromAmount,
+        sendMinAmountOut,
+        quote.output.routes,
+        account,
+        deadline,
+      ];
+      let sendValue = null;
+      if (fromAsset.address === NATIVE_TOKEN.symbol) {
+        func = "swapExactETHForTokens";
+	params = [
+          sendMinAmountOut,
+          quote.output.routes,
+          account,
+          deadline,
+        ];
+        sendValue = sendFromAmount;
       }
-
-      this._getSpecificAssetInfo(account, fromAsset.address);
-      this._getSpecificAssetInfo(account, toAsset.address);
-      this._getPairInfo(account);
-
+      if (toAsset.address === NATIVE_TOKEN.symbol) {
+        func = "swapExactTokensForETH";
+      }
+      const { request } = await viemClient.simulateContract({
+        ...routerContract,
+        account,
+        functionName: func,
+        args: params,
+      });
+      console.log(request);
+      const txHash = await walletClient.writeContract(request);
+      
+      this._getSpecificAssetInfo(web3, account, fromAsset.address);
+      this._getSpecificAssetInfo(web3, account, toAsset.address);
+      this._getPairInfo(web3, account);
+      this.emitter.emit(ACTIONS.TX_CONFIRMED, {
+              uuid: swapTXID,
+              txHash: txHash,
+            });
       this.emitter.emit(ACTIONS.SWAP_RETURNED);
+    
     } catch (ex) {
       console.error(ex);
       this.emitter.emit(ACTIONS.ERROR, ex);
     }
   };
 
+
   wrapOrUnwrap = async (payload: {
     type: string;
     content: { fromAsset: BaseAsset; toAsset: BaseAsset; fromAmount: string };
   }) => {
     try {
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4109,24 +4304,24 @@ class Store {
     }
   };
 
-  // _getSwapAllowance = async (
-  //   token: BaseAsset,
-  //   account: { address: string }
-  // ) => {
-  //   try {
-  //     const allowance = await viemClient.readContract({
-  //       address: token.address ,
-  //       abi: CONTRACTS.ERC20_ABI,
-  //       functionName: "allowance",
-  //       args: [account , CONTRACTS.ROUTER_ADDRESS],
-  //     });
+  _getSwapAllowance = async (
+     token: BaseAsset,
+     account: { address: string }
+   ) => {
+     try {
+       const allowance = await viemClient.readContract({
+         address: token.address ,
+         abi: CONTRACTS.ERC20_ABI,
+         functionName: "allowance",
+         args: [account , CONTRACTS.ROUTER_ADDRESS],
+       });
 
-  //     return formatUnits(allowance, token.decimals);
-  //   } catch (ex) {
-  //     console.error(ex);
-  //     return null;
-  //   }
-  // };
+       return formatUnits(allowance, token.decimals);
+     } catch (ex) {
+       console.error(ex);
+       return null;
+     }
+   };
 
   getVestNFTs = async () => {
     try {
@@ -4230,7 +4425,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4348,7 +4543,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4448,7 +4643,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4505,7 +4700,7 @@ class Store {
         console.warn("account not found");
         return null;
       }
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4639,7 +4834,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4812,7 +5007,7 @@ class Store {
         console.warn("account not found");
         return null;
       }
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -4907,15 +5102,14 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
       }
-
       // const govToken = this.getStore("govToken");
       const { tokenID, votes } = payload.content;
-
+      
       // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
       const voteTXID = this.getTXUUID();
 
@@ -4933,12 +5127,11 @@ class Store {
       });
 
       const pairs = this.getStore("pairs");
-      const deadGauges: string[] = [];
-
+      const deadGauges: string[] = []; 
       const onlyVotes = votes.filter((vote) => {
         return BigNumber(vote.value).gt(0) || BigNumber(vote.value).lt(0);
       });
-
+     
       const votesAddresses = onlyVotes.map((vote) => vote.address);
       const p = pairs.filter((pair) => {
         return votesAddresses.includes(pair.address);
@@ -4963,18 +5156,16 @@ class Store {
       const tokens = onlyVotes.map((vote) => {
         return vote.address;
       });
-
       const voteCounts = onlyVotes.map((vote) => {
-        return BigInt(BigNumber(vote.value).times(100).toFixed(0));
+        return BigNumber(vote.value).times(100).toFixed(0);
       });
-
       const writeVote = async () => {
         const { request } = await viemClient.simulateContract({
           account,
           address: CONTRACTS.VOTER_ADDRESS,
           abi: CONTRACTS.VOTER_ABI,
           functionName: "vote",
-          args: [BigInt(tokenID), tokens, voteCounts],
+          args: [parseInt(tokenID), tokens, voteCounts],
         });
         const txHash = await walletClient.writeContract(request);
         return txHash;
@@ -5070,7 +5261,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -5078,7 +5269,7 @@ class Store {
 
       const { asset, amount, gauge } = payload.content;
 
-      if (gauge.gauge.xx_wrapped_bribe_address === ZERO_ADDRESS) {
+      if (gauge.gauge.bribe_address === ZERO_ADDRESS) {
         console.warn("gauge does not have a bribe address");
         return null;
       }
@@ -5105,8 +5296,12 @@ class Store {
       });
 
       // CHECK ALLOWANCES AND SET TX DISPLAY
+      console.log(asset);
+      console.log(gauge);
+      
       const allowance = await this._getBribeAllowance(asset, gauge, account);
       if (!allowance) throw new Error("Error getting bribe allowance");
+      
       if (BigNumber(allowance).lt(amount)) {
         this.emitter.emit(ACTIONS.TX_STATUS, {
           uuid: allowanceTXID,
@@ -5126,7 +5321,7 @@ class Store {
           walletClient,
           allowanceTXID,
           asset.address,
-          gauge.gauge.xx_wrapped_bribe_address
+          gauge.gauge.bribe_address
         );
       }
 
@@ -5139,7 +5334,7 @@ class Store {
       const writeCreateBribe = async () => {
         const { request } = await viemClient.simulateContract({
           account,
-          address: gauge.gauge.xx_wrapped_bribe_address,
+          address: gauge.gauge.bribe_address,
           abi: CONTRACTS.BRIBE_ABI,
           functionName: "notifyRewardAmount",
           args: [asset.address, BigInt(sendAmount)],
@@ -5171,9 +5366,9 @@ class Store {
         abi: CONTRACTS.ERC20_ABI,
         functionName: "allowance",
         // We only bribe x_wrapped_bribe_address
-        args: [address, pair.gauge.xx_wrapped_bribe_address],
+        args: [address, pair.gauge.bribe_address],
       });
-
+      
       return formatUnits(allowance, token.decimals);
     } catch (ex) {
       console.error(ex);
@@ -5218,13 +5413,13 @@ class Store {
       const pairs = this.getStore("pairs");
       const veToken = this.getStore("veToken");
       const govToken = this.getStore("govToken");
+      
       if (!veToken || !govToken)
         throw new Error(
           "Error getting veToken and govToken in getRewardBalances"
         );
 
       const gauges = pairs.filter(hasGauge);
-
       if (typeof window.structuredClone === "undefined") {
         throw new Error(
           "Your browser does not support structuredClone. Please use a different browser."
@@ -5232,20 +5427,17 @@ class Store {
       }
 
       const x_filteredPairs = structuredClone(gauges);
-      const xx_filteredPairs = structuredClone(gauges);
       const filteredPairs2 = structuredClone(gauges);
       const filteredPairs3 = structuredClone(gauges);
-
+      
       let veDistReward: VeDistReward[] = [];
       let x_filteredBribes: Gauge[] = []; // Pair with gauge rewardType set to "XBribe"
-      let xx_filteredBribes: Gauge[] = []; // Pair with gauge rewardType set to "XBribe"
-
       if (tokenID) {
         const x_calls = x_filteredPairs.flatMap((pair) =>
-          pair.gauge.x_bribes.map(
+          pair.gauge.bribes.map(
             (bribe) =>
               ({
-                address: pair.gauge.x_wrapped_bribe_address,
+                address: pair.gauge.bribe_address,
                 abi: CONTRACTS.BRIBE_ABI,
                 functionName: "earned",
                 args: [bribe.token.address, BigInt(tokenID)],
@@ -5255,21 +5447,6 @@ class Store {
         const x_callsChunks = chunkArray(x_calls, 100);
 
         const x_earnedBribesAllPairs = await multicallChunks(x_callsChunks);
-
-        const xx_calls = x_filteredPairs.flatMap((pair) =>
-          pair.gauge.xx_bribes.map(
-            (bribe) =>
-              ({
-                address: pair.gauge.xx_wrapped_bribe_address,
-                abi: CONTRACTS.BRIBE_ABI,
-                functionName: "earned",
-                args: [bribe.token.address, BigInt(tokenID)],
-              } as const)
-          )
-        );
-        const xx_callsChunks = chunkArray(xx_calls, 100);
-
-        const xx_earnedBribesAllPairs = await multicallChunks(xx_callsChunks);
 
         x_filteredPairs.forEach((pair) => {
           const x_earnedBribesPair = x_earnedBribesAllPairs.splice(
@@ -5287,21 +5464,6 @@ class Store {
           });
         });
 
-        xx_filteredPairs.forEach((pair) => {
-          const xx_earnedBribesPair = xx_earnedBribesAllPairs.splice(
-            0,
-            pair.gauge.xx_bribes.length
-          );
-          pair.gauge.xx_bribesEarned = pair.gauge.xx_bribes.map((bribe, i) => {
-            return {
-              ...bribe,
-              earned: formatUnits(
-                xx_earnedBribesPair[i],
-                bribe.token.decimals
-              ) as `${number}`,
-            };
-          });
-        });
 
         x_filteredBribes = x_filteredPairs
           .filter((pair) => {
@@ -5333,35 +5495,6 @@ class Store {
             return pair;
           });
 
-        xx_filteredBribes = xx_filteredPairs
-          .filter((pair) => {
-            if (
-              pair.gauge.xx_bribesEarned &&
-              pair.gauge.xx_bribesEarned.length > 0
-            ) {
-              let shouldReturn = false;
-
-              for (let i = 0; i < pair.gauge.xx_bribesEarned.length; i++) {
-                if (
-                  pair.gauge.xx_bribesEarned[i].earned &&
-                  parseUnits(
-                    pair.gauge.xx_bribesEarned[i].earned as `${number}`,
-                    pair.gauge.xx_bribes[i].token.decimals
-                  ) > 0
-                ) {
-                  shouldReturn = true;
-                }
-              }
-
-              return shouldReturn;
-            }
-
-            return false;
-          })
-          .map((pair) => {
-            pair.rewardType = "XXBribe";
-            return pair;
-          });
 
         const veDistEarned = await viemClient.readContract({
           address: CONTRACTS.VE_DIST_ADDRESS,
@@ -5395,27 +5528,13 @@ class Store {
         } as const;
       });
 
-      const BLOTR_rewardsCalls = filteredPairs3.map((pair) => {
-        return {
-          address: pair.gauge.address,
-          abi: CONTRACTS.GAUGE_ABI,
-          functionName: "earned",
-          args: [CANTO_OPTION_TOKEN, account],
-        } as const;
-      });
-
       const rewardsEarnedCallResult = await viemClient.multicall({
         allowFailure: false,
         contracts: rewardsCalls,
       });
 
-      const BLOTR_rewardsEarnedCallResult = await viemClient.multicall({
-        allowFailure: false,
-        contracts: BLOTR_rewardsCalls,
-      });
 
       const rewardsEarned = [...filteredPairs2];
-      const BLOTR_rewardsEarned = [...filteredPairs3];
 
       for (let i = 0; i < rewardsEarned.length; i++) {
         rewardsEarned[i].gauge.rewardsEarned = formatEther(
@@ -5423,14 +5542,8 @@ class Store {
         );
       }
 
-      for (let i = 0; i < BLOTR_rewardsEarned.length; i++) {
-        BLOTR_rewardsEarned[i].gauge.BLOTR_rewardsEarned = formatEther(
-          BLOTR_rewardsEarnedCallResult[i]
-        );
-      }
 
       const filteredRewards: Gauge[] = []; // Pair with rewardType set to "Reward"
-      const filteredBlotrRewards: Gauge[] = []; // Pair with rewardType set to "Reward"
       for (let j = 0; j < rewardsEarned.length; j++) {
         let pair = Object.assign({}, rewardsEarned[j]);
         if (
@@ -5442,23 +5555,10 @@ class Store {
           filteredRewards.push(pair);
         }
       }
-      for (let j = 0; j < BLOTR_rewardsEarned.length; j++) {
-        let pair = Object.assign({}, BLOTR_rewardsEarned[j]);
-        if (
-          pair.gauge &&
-          pair.gauge.BLOTR_rewardsEarned &&
-          parseEther(pair.gauge.BLOTR_rewardsEarned as `${number}`) > 0
-        ) {
-          pair.rewardType = "oBLOTR_Reward";
-          filteredBlotrRewards.push(pair);
-        }
-      }
 
       const rewards: Store["store"]["rewards"] = {
         xBribes: x_filteredBribes,
-        xxBribes: xx_filteredBribes,
         rewards: filteredRewards,
-        BLOTR_rewards: filteredBlotrRewards,
         veDist: veDistReward,
       };
 
@@ -5487,7 +5587,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -5550,7 +5650,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -5574,9 +5674,9 @@ class Store {
       });
 
       // SUBMIT CLAIM TRANSACTION
-      const sendGauges = [pair.gauge.xx_wrapped_bribe_address];
+      const sendGauges = [pair.gauge.bribe_address];
       const sendTokens = [
-        pair.gauge.xx_bribesEarned!.map((bribe) => {
+        pair.gauge.bribesEarned!.map((bribe) => {
           return (bribe as Bribe).token.address;
         }),
       ];
@@ -5614,7 +5714,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -5626,7 +5726,6 @@ class Store {
       let claim01TXID = this.getTXUUID();
       let claim0TXID = this.getTXUUID();
       let rewardClaimTXIDs: string[] = [];
-      let oblotr_rewardClaimTXIDs: string[] = [];
       let distributionClaimTXIDs: string[] = [];
 
       let xBribePairs = (pairs as Gauge[]).filter((pair) => {
@@ -5640,9 +5739,6 @@ class Store {
         return pair.rewardType === "Reward";
       });
 
-      let oBlotrRewardPairs = (pairs as Gauge[]).filter((pair) => {
-        return pair.rewardType === "oBLOTR_Reward";
-      });
 
       let distribution = (pairs as VeDistReward[]).filter((pair) => {
         return pair.rewardType === "Distribution";
@@ -5668,8 +5764,7 @@ class Store {
       if (
         xBribePairs.length == 0 &&
         xxBribePairs.length == 0 &&
-        rewardPairs.length == 0 &&
-        oBlotrRewardPairs.length == 0
+        rewardPairs.length == 0 
       ) {
         this.emitter.emit(ACTIONS.ERROR, "Nothing to claim");
         this.emitter.emit(ACTIONS.CLAIM_ALL_REWARDS_RETURNED);
@@ -5709,18 +5804,6 @@ class Store {
           sendOBJ.transactions.push({
             uuid: newClaimTX,
             description: `Claiming reward for ${rewardPairs[i].symbol}`,
-            status: TransactionStatus.WAITING,
-          });
-        }
-      }
-      if (oBlotrRewardPairs.length > 0) {
-        for (let i = 0; i < oBlotrRewardPairs.length; i++) {
-          const newClaimTX = this.getTXUUID();
-
-          oblotr_rewardClaimTXIDs.push(newClaimTX);
-          sendOBJ.transactions.push({
-            uuid: newClaimTX,
-            description: `Claiming reward for ${oBlotrRewardPairs[i].symbol}`,
             status: TransactionStatus.WAITING,
           });
         }
@@ -5776,27 +5859,7 @@ class Store {
           await this._writeContractWrapper(rewardClaimTXIDs[i], writeGetReward);
         }
       }
-
-      if (oBlotrRewardPairs.length > 0) {
-        for (let i = 0; i < oBlotrRewardPairs.length; i++) {
-          const writeGetReward = async () => {
-            const { request } = await viemClient.simulateContract({
-              account,
-              address: oBlotrRewardPairs[i].gauge.address,
-              abi: CONTRACTS.GAUGE_ABI,
-              functionName: "getReward",
-              args: [account, [CANTO_OPTION_TOKEN]],
-            });
-            const txHash = await walletClient.writeContract(request);
-            return txHash;
-          };
-          await this._writeContractWrapper(
-            oblotr_rewardClaimTXIDs[i],
-            writeGetReward
-          );
-        }
-      }
-
+      
       if (distribution.length > 0) {
         for (let i = 0; i < distribution.length; i++) {
           const writeClaim = async () => {
@@ -5840,7 +5903,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -5888,64 +5951,6 @@ class Store {
     }
   };
 
-  claimBlotrRewards = async (payload: {
-    type: string;
-    content: { pair: Gauge; tokenID: string };
-  }) => {
-    try {
-      const account = getAccount().address;
-      if (!account) {
-        console.warn("account not found");
-        return null;
-      }
-
-      const walletClient = await getWalletClient({ chainId: canto.id });
-      if (!walletClient) {
-        console.warn("wallet");
-        return null;
-      }
-
-      const { pair, tokenID } = payload.content;
-
-      // ADD TRNASCTIONS TO TRANSACTION QUEUE DISPLAY
-      let claimTXID = this.getTXUUID();
-
-      await this.emitter.emit(ACTIONS.TX_ADDED, {
-        title: `Claim rewards for ${pair.token0.symbol}/${pair.token1.symbol}`,
-        verb: "Rewards Claimed",
-        transactions: [
-          {
-            uuid: claimTXID,
-            description: `Claiming your rewards`,
-            status: "WAITING",
-          },
-        ],
-      });
-
-      const writeGetReward = async () => {
-        const { request } = await viemClient.simulateContract({
-          account,
-          address: pair.gauge?.address,
-          abi: CONTRACTS.GAUGE_ABI,
-          functionName: "getReward",
-          args: [account, [CANTO_OPTION_TOKEN]],
-        });
-        const txHash = await walletClient.writeContract(request);
-        return txHash;
-      };
-      await this._writeContractWrapper(claimTXID, writeGetReward);
-
-      this.getRewardBalances({
-        type: "internal reward balances",
-        content: { tokenID },
-      });
-      this.emitter.emit(ACTIONS.CLAIM_REWARD_RETURNED);
-      this._getSpecificAssetInfo(account, CONTRACTS.GOV_TOKEN_ADDRESS);
-    } catch (ex) {
-      console.error(ex);
-      this.emitter.emit(ACTIONS.ERROR, ex);
-    }
-  };
 
   claimVeDist = async (payload: {
     type: string;
@@ -5958,7 +5963,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -6016,7 +6021,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -6073,7 +6078,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -6180,7 +6185,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;
@@ -6242,7 +6247,7 @@ class Store {
         return null;
       }
 
-      const walletClient = await getWalletClient({ chainId: canto.id });
+      const walletClient = await getWalletClient({ chainId: goerli.id });
       if (!walletClient) {
         console.warn("wallet");
         return null;

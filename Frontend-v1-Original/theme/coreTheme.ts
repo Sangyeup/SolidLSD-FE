@@ -178,7 +178,7 @@ const coreTheme = createTheme({
           "&.Mui-selected": {
             backgroundColor: "rgba(0,0,0,0)",
             border: "none",
-            boxShadow: "0px 0px 0.2em rgba(30, 131, 126, 0.993)",
+            boxShadow: "0px 0px 0.2em rgba(97, 25, 125, 0.993)",
           },
         },
       },
@@ -280,13 +280,13 @@ const coreTheme = createTheme({
     MuiSlider: {
       styleOverrides: {
         root: {
-          color: "#06D3D7",
+          color: "#d30677",
           height: 8,
         },
         thumb: {
           height: 24,
           width: 24,
-          backgroundColor: "#06D3D7",
+          backgroundColor: "#d30677",
           border: "2px solid currentColor",
           "&:focus, &:hover, &$active": {
             boxShadow: "inherit",

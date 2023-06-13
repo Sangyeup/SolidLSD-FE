@@ -42,9 +42,9 @@ export default function Layout({
         <link rel="icon" href="/images/logo-icon.png" />
         <meta
           name="description"
-          content="Velocimeter allows low cost, near 0 slippage trades on uncorrelated or tightly correlated assets built on Canto."
+          content="SolidLSD allows low cost, near 0 slippage trades on uncorrelated or tightly correlated assets."
         />
-        <meta name="og:title" content="Velocimeter" />
+        <meta name="og:title" content="SOLIDLSD" />
         <meta name="twitter:card" content="summary_large_image" />
       </Head>
       <div className={classes.background} />
@@ -72,7 +72,7 @@ export default function Layout({
                 check that your wallet is connected to Canto Mainnet.`}
               </Typography>
               <Button
-                className="scale-90 rounded-3xl border border-solid border-green-300 bg-green-300 px-6 pt-3 pb-4 font-bold transition-all duration-300 hover:scale-95 hover:bg-emerald-300"
+                className="scale-90 rounded-3xl border border-solid border-purple-300 bg-purple-300 px-6 pt-3 pb-4 font-bold transition-all duration-300 hover:scale-95 hover:bg-emerald-300"
                 variant="contained"
                 onClick={() => switchNetwork?.()}
               >

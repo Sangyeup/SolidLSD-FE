@@ -5,31 +5,12 @@ import * as contractsCanto from "./contractsCanto";
 import * as contracts from "./contracts";
 import * as actions from "./actions";
 
-let network: "7700" | "42161" | "421613" = "7700";
-
-if (process.env.NEXT_PUBLIC_CHAINID === "42161") {
-  network = "42161";
-} else if (process.env.NEXT_PUBLIC_CHAINID === "421613") {
-  network = "421613";
-}
+let network: "5";
+network = "5";
 
 const config = {
-  "7700": {
-    scan: "https://tuber.build/",
-    contracts: contractsCanto,
-    nativeETH: {
-      address: contractsCanto.CANTO_ADDRESS,
-      decimals: contractsCanto.CANTO_DECIMALS,
-      logoURI: contractsCanto.CANTO_LOGO,
-      name: contractsCanto.CANTO_NAME,
-      symbol: contractsCanto.CANTO_SYMBOL,
-      chainId: 7700,
-    },
-    wNativeAddress: contractsCanto.WCANTO_ADDRESS,
-    wNativeABI: contractsCanto.WCANTO_ABI,
-  },
-  "421613": {
-    scan: "https://goerli.arbiscan.io/",
+  "5": {
+    scan: "https://goerli.etherscan.io/",
     contracts: contractsTestnet,
     nativeETH: {
       address: contractsTestnet.ETH_ADDRESS,
@@ -37,21 +18,7 @@ const config = {
       logoURI: contractsTestnet.ETH_LOGO,
       name: contractsTestnet.ETH_NAME,
       symbol: contractsTestnet.ETH_SYMBOL,
-      chainId: 421613,
-    },
-    wNativeAddress: contractsTestnet.WETH_ADDRESS,
-    wNativeABI: contractsTestnet.WETH_ABI,
-  },
-  "42161": {
-    scan: "https://arbiscan.io/",
-    contracts: contracts,
-    nativeETH: {
-      address: contracts.ETH_ADDRESS,
-      decimals: contracts.ETH_DECIMALS,
-      logoURI: contracts.ETH_LOGO,
-      name: contracts.ETH_NAME,
-      symbol: contracts.ETH_SYMBOL,
-      chainId: 42161,
+      chainId: 5,
     },
     wNativeAddress: contractsTestnet.WETH_ADDRESS,
     wNativeABI: contractsTestnet.WETH_ABI,

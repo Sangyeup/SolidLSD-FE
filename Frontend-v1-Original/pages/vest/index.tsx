@@ -25,7 +25,7 @@ function Vesting() {
               className="my-7 mx-auto max-w-3xl text-center text-base text-secondaryGray sm:text-lg"
               variant="body2"
             >
-              Lock your FLOW to earn rewards and governance rights. Each locked
+              Lock your stETH to earn rewards and governance rights. Each locked
               position is created and represented as an NFT, meaning you can
               hold multiple locked positions.
             </Typography>
